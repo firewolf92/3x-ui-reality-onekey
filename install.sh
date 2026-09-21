@@ -304,7 +304,7 @@ REALITY_PUBLIC_KEY=${REALITY_PUBLIC_KEY}
 UFW_SSH_PORT=${UFW_SSH_PORT}
 EOF_STATE
   chmod 600 "$STATE_FILE"
-  CLIENT_LINK="vless://${UUID}@${SITE_DOMAIN}:${REALITY_PORT}?type=tcp&security=reality&sni=${REALITY_SNI}&pbk=${REALITY_PUBLIC_KEY}&sid=${SHORT_ID}&fp=chrome&spx=%2F&flow=xtls-rprx-vision#onekey-reality"
+  CLIENT_LINK="vless://${UUID}@${PUBLIC_IPV4}:${REALITY_PORT}?type=tcp&security=reality&sni=${REALITY_SNI}&pbk=${REALITY_PUBLIC_KEY}&sid=${SHORT_ID}&fp=chrome&spx=%2F&flow=xtls-rprx-vision#onekey-reality"
   printf '%s\n' "$CLIENT_LINK" > "$CLIENT_FILE"
   chmod 600 "$CLIENT_FILE"
 }
