@@ -117,7 +117,8 @@ PY
   tar -czf "$pending/$SNAPSHOT_NAME" -C "$pending/files" .
   ( cd "$pending"; sha256sum "$SNAPSHOT_NAME" recovery.sh metadata.txt > "$SNAPSHOT_NAME.sha256" )
   rm -rf -- "$pending/files"
-  final="$BACKUP_ROOT/recovery-$(date -u +%Y%m%d-%H%M%S)-$$"
+  verify_snapshot "$pending" || fail "生成的快照未通过自校验，不会作为可用备份保存。"
+  final="$BACKUP_ROOT/recovery-$(date -u +%Y%m%d-%H%M%S)-$"
   mv -- "$pending" "$final"
   trap - EXIT
   say "快照已保存：$final"
