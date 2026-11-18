@@ -16,7 +16,7 @@ REALITY_PORT="443"
 log() { printf '\033[1;32m[+]\033[0m %s\n' "$*"; }
 die() { printf '\033[1;31m[x]\033[0m %s\n' "$*" >&2; exit 1; }
 
-cleanup() { rm -f /tmp/3xui-onekey-cookie.txt; }
+cleanup() { if [[ -n "${COOKIE_FILE:-}" ]]; then rm -f -- "$COOKIE_FILE"; fi; }
 trap cleanup EXIT
 trap 'die "安装过程中发生错误（行 $LINENO）。请保存屏幕输出后再排查，不要重复强行安装。"' ERR
 
@@ -183,14 +183,29 @@ wait_panel() {
   die "3x-ui 面板在本机端口没有正常响应。"
 }
 
+fetch_panel_csrf() {
+  local result
+  result=$(curl -fsS --max-time 10 -b "$COOKIE_FILE" -c "$COOKIE_FILE" \
+    "$PANEL_LOCAL/csrf-token") || die "无法取得 3x-ui CSRF Token。"
+  CSRF_TOKEN=$(jq -er 'select(.success == true) | .obj | strings | select(length > 0)' \
+    <<< "$result") || die "3x-ui 未返回有效 CSRF Token。"
+}
+
 panel_login() {
   PANEL_LOCAL="http://127.0.0.1:${PANEL_PORT}${PANEL_BASE%/}"
   local payload response
+  COOKIE_FILE=$(mktemp /tmp/3xui-onekey-cookie.XXXXXXXX)
+  chmod 0600 "$COOKIE_FILE"
+  fetch_panel_csrf
   payload=$(jq -n --arg u "$PANEL_USER" --arg p "$PANEL_PASSWORD" '{username:$u,password:$p}')
-  response=$(curl -fsS -c /tmp/3xui-onekey-cookie.txt -H 'Content-Type: application/json' --data "$payload" "$PANEL_LOCAL/login")
-  jq -e '.success == true' <<<"$response" >/dev/null || die "3x-ui API 登录失败: $response"
+  response=$(curl -fsS --max-time 10 -b "$COOKIE_FILE" -c "$COOKIE_FILE" \
+    -H "X-CSRF-Token: $CSRF_TOKEN" -H 'Content-Type: application/json' \
+    --data "$payload" "$PANEL_LOCAL/login") || die "3x-ui 自动登录请求失败。"
+  jq -e '.success == true' <<< "$response" >/dev/null ||
+    die "3x-ui API 登录失败；请确认安装凭据及后台安全设置。"
+  # 3x-ui clears anonymous CSRF state when login privileges change.
+  fetch_panel_csrf
 }
-
 create_reality_inbound() {
   UUID=$(cat /proc/sys/kernel/random/uuid)
   SHORT_ID=$(openssl rand -hex 8)
@@ -198,7 +213,7 @@ create_reality_inbound() {
   XRAY_INTERNAL_PORT="$XRAY_INTERNAL_PORT_DEFAULT"
 
   local key_json private_key public_key payload response
-  key_json=$(curl -fsS -b /tmp/3xui-onekey-cookie.txt "$PANEL_LOCAL/panel/api/server/getNewX25519Cert")
+  key_json=$(curl -fsS -b "$COOKIE_FILE" "$PANEL_LOCAL/panel/api/server/getNewX25519Cert")
   jq -e '.success == true' <<<"$key_json" >/dev/null || die "Reality X25519 密钥生成失败: $key_json"
   private_key=$(jq -r '.obj.privateKey' <<<"$key_json")
   public_key=$(jq -r '.obj.publicKey' <<<"$key_json")
@@ -214,7 +229,7 @@ create_reality_inbound() {
       sniffing:{enabled:true,destOverride:["http","tls","quic"],metadataOnly:false,routeOnly:false}
     }')
 
-  response=$(curl -fsS -b /tmp/3xui-onekey-cookie.txt -H 'Content-Type: application/json' --data "$payload" "$PANEL_LOCAL/panel/api/inbounds/add")
+  response=$(curl -fsS -b "$COOKIE_FILE" -H "X-CSRF-Token: $CSRF_TOKEN" -H 'Content-Type: application/json' --data "$payload" "$PANEL_LOCAL/panel/api/inbounds/add")
   jq -e '.success == true' <<<"$response" >/dev/null || die "创建 Reality 入站失败: $response"
   REALITY_PUBLIC_KEY="$public_key"
 
