@@ -115,10 +115,15 @@ cleanup_failed_install() {
   for svc in haproxy caddy x-ui; do
     systemctl disable --now "$svc" 2>/dev/null || true
   done
+  # Caddy/HAProxy were absent during the clean-host preflight and are
+  # installed by this script. Remove them now so a second preflight does
+  # not reject their leftover systemd units. No autoremove or UFW reset.
+  DEBIAN_FRONTEND=noninteractive apt-get remove -y caddy haproxy ||
+    die "无法卸载失败安装留下的 Caddy/HAProxy；请检查 APT 错误。安装标记仍保留。"
   rm -rf -- /usr/local/x-ui /etc/x-ui /etc/systemd/system/x-ui.service.d     /etc/3xui-onekey /var/www/onekey-site
   rm -f -- /usr/bin/x-ui /etc/systemd/system/x-ui.service     /etc/caddy/Caddyfile /etc/haproxy/haproxy.cfg     /usr/local/sbin/onekey-status /usr/local/sbin/onekey-update     /usr/local/sbin/onekey-uninstall /usr/local/sbin/onekey-recovery
   systemctl daemon-reload
-  printf '清理完成；部分状态已保存至 %s。软件包及 UFW 规则未删除。\n' "$dir"
+  printf '清理完成；部分状态已保存至 %s。其他基础软件包及 UFW 规则未删除。\n' "$dir"
 }
 
 install_base_packages() {
