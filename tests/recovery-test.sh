@@ -33,6 +33,30 @@ tar -czf "$tmp/archive/snapshot.tar.gz" -C "$tmp/archive/files" .
 
 bash "$root/recovery.sh" verify "$tmp/archive"
 bash "$root/recovery.sh" restore "$tmp/archive" >/dev/null
+
+# An OS-version mismatch must be rejected before a restore could touch disk.
+cp "$tmp/archive/metadata.txt" "$tmp/metadata.original"
+sed -i 's/^os_version=.*/os_version=unsupported-version/' "$tmp/archive/metadata.txt"
+( cd "$tmp/archive"; sha256sum snapshot.tar.gz recovery.sh metadata.txt > snapshot.tar.gz.sha256 )
+if bash "$root/recovery.sh" restore "$tmp/archive" >/dev/null 2>&1; then
+  echo "FAIL: incompatible OS version was accepted" >&2
+  exit 1
+fi
+cp "$tmp/metadata.original" "$tmp/archive/metadata.txt"
+( cd "$tmp/archive"; sha256sum snapshot.tar.gz recovery.sh metadata.txt > snapshot.tar.gz.sha256 )
+
+# A symlink escaping the archive must fail even when SHA256 is valid.
+ln -s /etc/shadow "$tmp/archive/files/etc/x-ui/escape-test"
+tar -czf "$tmp/archive/snapshot.tar.gz" -C "$tmp/archive/files" .
+( cd "$tmp/archive"; sha256sum snapshot.tar.gz recovery.sh metadata.txt > snapshot.tar.gz.sha256 )
+if bash "$root/recovery.sh" verify "$tmp/archive" >/dev/null 2>&1; then
+  echo "FAIL: escaping symlink was accepted" >&2
+  exit 1
+fi
+rm "$tmp/archive/files/etc/x-ui/escape-test"
+tar -czf "$tmp/archive/snapshot.tar.gz" -C "$tmp/archive/files" .
+( cd "$tmp/archive"; sha256sum snapshot.tar.gz recovery.sh metadata.txt > snapshot.tar.gz.sha256 )
+
 printf 'tamper' >> "$tmp/archive/snapshot.tar.gz"
 if bash "$root/recovery.sh" verify "$tmp/archive" >/dev/null 2>&1; then
   echo "FAIL: tampered archive was accepted" >&2
