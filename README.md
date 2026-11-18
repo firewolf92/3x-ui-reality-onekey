@@ -104,7 +104,7 @@ bash /root/onekey-install.sh --resume-failed
 
 **不要再运行普通安装或 `--resume-failed`，更不要运行 `--cleanup-failed`**。此时原有 Reality UUID/密钥/入站必须保留，重新创建会导致客户端参数变化。
 
-本项目提供独立的 `resume-caddy.sh`，不会重新安装 3x-ui，也不会重新创建或修改任何入站。它会验证上次的失败状态、原站点、3x-ui 原凭据、入站 2443 的详细数据及新生成的 Caddyfile，并从原入站中读取 UUID、Short ID 和公钥。检查异常会拒绝续装。
+本项目提供独立的 `resume-caddy.sh`，不会重新安装 3x-ui，也不会重新创建或修改任何入站。它会验证上次的失败状态、原站点、3x-ui 原凭据、入站 2443 的详细数据及新生成的 Caddyfile，并从原入站中读取 UUID、Short ID 和公钥。 兼容上游接口将入站的 `settings` / `streamSettings` 返回为 JSON 字符串或对象两种格式；遇到无法识别的配置仍会拒绝覆盖，不会重新生成密钥。检查异常会拒绝续装。
 
 在 VPS 的 root 终端执行，**先只读检查**：
 

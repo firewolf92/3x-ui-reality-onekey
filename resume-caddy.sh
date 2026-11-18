@@ -64,12 +64,16 @@ parse_existing_reality() {
   # Confirm exactly one inbound on 2443, created by the OneKey script.
   # Never print credentials or Reality private/public keys to stdout.
   extracted=$(jq -ce --arg sni "$REALITY_SNI" --argjson port "$XRAY_INTERNAL_PORT_DEFAULT" '
+    def decode_if_string:
+      if type == "string" then fromjson
+      elif type == "object" then .
+      else empty end;
     if .success == true and (.obj | type) == "array" then
       [.obj[] | select(.port == $port)] as $all
       | if ($all | length) != 1 then empty
         else $all[0] as $ib
-        | ($ib.settings | fromjson) as $clients
-        | ($ib.streamSettings | fromjson) as $stream
+        | ($ib.settings | decode_if_string) as $clients
+        | ($ib.streamSettings | decode_if_string) as $stream
         | {
             uuid: $clients.clients[0].id,
             flow: $clients.clients[0].flow,
@@ -97,7 +101,7 @@ parse_existing_reality() {
           )
         end
     else empty end
-  ' <<< "$response") || die "现有 2443 入站与 OneKey 配置不一致；拒绝恢复。"
+  ' <<< "$response" 2>/dev/null) || die "现有 2443 入站的 JSON 数据类型或配置与 OneKey 不一致；拒绝恢复。"
   UUID=$(jq -er '.uuid' <<< "$extracted")
   SHORT_ID=$(jq -er '.sid' <<< "$extracted")
   REALITY_PUBLIC_KEY=$(jq -er '.pub' <<< "$extracted")
