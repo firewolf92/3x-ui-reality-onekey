@@ -67,6 +67,33 @@ bash <(curl -fsSL https://raw.githubusercontent.com/firewolf92/3x-ui-reality-one
 
 随后自动完成安装、配置与自检。健康检查会为首次 HTTPS 证书签发预留重试时间。首次安装需要通过 SSH 登录；如果系统无法自动识别 SSH 端口，必须显式设置 `ONEKEY_SSH_PORT=实际端口`，**不会再假定 SSH 一定是 22**。
 
+### 3x-ui 安装成功但一键脚本自动配置失败：安全续装
+
+3x-ui v3.11.0 起，登录和修改入站配置需要会话 Cookie 与 `X-CSRF-Token`。最新版安装脚本已在登录前取得 CSRF Token，并在登录成功后重新取得 Token，再使用它创建 Reality 入站。
+
+**特别适用场景**：官方安装已经显示 `x-ui ... installation finished`，但是 OneKey 在自动登录阶段返回 HTTP 403，尚未创建 Reality 入站，也未创建本项目的站点/配置。
+
+**不要重装 x-ui、不要运行 `--cleanup-failed`、不要把 `/etc/x-ui/install-result.env` 的内容分享出去。** 该文件包含管理员密码等机密。
+
+用 root 在 VPS 执行：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/firewolf92/3x-ui-reality-onekey/main/install.sh -o /root/onekey-install.sh
+bash -n /root/onekey-install.sh
+
+# 不修改系统的只读检查
+systemctl is-active x-ui
+test -s /etc/x-ui/install-result.env && echo "3x-ui 安装凭据存在"
+test -f /etc/3xui-onekey/.installation-incomplete && echo "OneKey 未完成标记存在"
+
+# 复用已经安装好的面板，从自动配置步骤继续
+bash /root/onekey-install.sh --resume-failed
+```
+
+续装时重新输入**原计划的站点域名、面板域名和证书邮箱**，Reality SNI 可直接使用默认值。脚本会从 root 保护的官方安装凭据文件读取原来的用户名、密码、端口与面板路径，不会再执行 `apt-get` 或重新安装 3x-ui。续装前会验证当前部署状态、DNS、SSH 端口，并检查入站 2443 是否已存在，以免重复创建。
+
+**使用范围有限**：该入口只适用于 OneKey 在创建 Reality 入站、站点和项目配置之前中断的阶段。如果项目配置、站点或入站已写入，则会拒绝重复续装，应停止操作并人工排查。没有承诺任何中断状态都能自动恢复。还没有在真实 VPS 上完成续装验收。
+
 ### 安装中断后的安全处理
 
 安装脚本会记录“尚未完成”的状态。如果部署中途失败，**不要直接反复执行安装命令**。优先保存终端日志并排查原因；确认需要放弃这次安装后，再下载当前脚本并在交互式 root 终端中清理：
