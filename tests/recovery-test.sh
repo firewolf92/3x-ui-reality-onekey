@@ -20,6 +20,11 @@ printf 'script\n' > "$tmp/archive/files/usr/bin/x-ui"
     . /etc/os-release
     printf '%s' "$ID"
   )"
+  printf 'os_version=%s\n' "$(
+    # shellcheck disable=SC1091
+    . /etc/os-release
+    printf '%s' "${VERSION_ID:-unknown}"
+  )"
   printf 'arch=%s\n' "$(uname -m)"
 } > "$tmp/archive/metadata.txt"
 cp -- "$root/recovery.sh" "$tmp/archive/recovery.sh"
@@ -43,6 +48,13 @@ if bash "$root/recovery.sh" verify "$tmp/archive" >/dev/null 2>&1; then
   exit 1
 fi
 cp -- "$root/recovery.sh" "$tmp/archive/recovery.sh"
+
+# Rollback must never modify a system without explicit --apply;
+# a non-deployed runner must stop at the OneKey state guard.
+if bash "$root/recovery.sh" rollback "$tmp/archive" --apply >/dev/null 2>&1; then
+  echo "FAIL: rollback without installed OneKey was accepted" >&2
+  exit 1
+fi
 
 # A checksum-valid but incomplete archive must not be accepted either.
 rm -f "$tmp/archive/files/usr/bin/x-ui"
