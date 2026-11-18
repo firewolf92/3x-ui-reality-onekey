@@ -223,11 +223,105 @@ restore_snapshot() {
   trap - EXIT
 }
 
+
+# Roll back the panel only; keep HTTPS, DNS, UFW and HAProxy untouched.
+# This is a deliberate operator action, never an automatic reaction to failure.
+rollback_snapshot() {
+  local dir="$1" apply="$2" tmp guard answer old
+  verify_snapshot "$dir"
+  check_snapshot_host "$dir"
+  [[ -r /etc/3xui-onekey/config.env ]] || fail "当前服务器没有 OneKey 配置，不能原地回滚。"
+  say "回滚将恢复 3x-ui 程序、CLI、SQLite 数据库和 systemd 服务，站点与反代保持不变。"
+  [[ "$apply" == 1 ]] || { say "仅预检；要执行请添加 --apply。"; return 0; }
+  need_root
+  [[ -t 0 ]] || fail "必须在交互式终端确认。"
+  printf '输入 ROLLBACK 以停止 x-ui 并恢复旧程序/数据库：'
+  read -r answer
+  [[ "$answer" == ROLLBACK ]] || fail "已取消回滚。"
+
+  mkdir -p -- "$BACKUP_ROOT"
+  chmod 0700 -- "$BACKUP_ROOT"
+  tmp=$(mktemp -d "$BACKUP_ROOT/.rollback-stage.XXXXXXXX")
+  trap 'rm -rf -- "$tmp"' EXIT
+  tar -xzf "$dir/$SNAPSHOT_NAME" -C "$tmp" --no-same-owner
+  [[ -f "$tmp/etc/x-ui/x-ui.db" && -x "$tmp/usr/local/x-ui/x-ui" ]] ||
+    fail "快照程序或数据库缺失；操作已停止。"
+  python3 - "$tmp/etc/x-ui/x-ui.db" <<'PY'
+import sqlite3
+import sys
+
+db = sqlite3.connect(f"file:{sys.argv[1]}?mode=ro", uri=True)
+try:
+    result = db.execute("PRAGMA integrity_check").fetchone()
+    if result is None or result[0] != "ok":
+        raise RuntimeError("Invalid recovery database")
+finally:
+    db.close()
+PY
+
+  # Copy even a broken current runtime before changing it, so an operator
+  # can recover files omitted by an interrupted upstream updater.
+  guard="$BACKUP_ROOT/pre-rollback-$(date -u +%Y%m%d-%H%M%S)-$"
+  install -d -m 0700 "$guard"
+  local -a saved=()
+  for old in /etc/x-ui /usr/local/x-ui /usr/bin/x-ui \
+             /etc/systemd/system/x-ui.service /etc/systemd/system/x-ui.service.d; do
+    [[ -e "$old" || -L "$old" ]] && saved+=("$old")
+  done
+  if (( ${#saved[@]} > 0 )); then
+    tar -czf "$guard/old-runtime.tar.gz" "${saved[@]}"
+    ( cd "$guard"; sha256sum old-runtime.tar.gz > old-runtime.tar.gz.sha256 )
+  fi
+  say "当前残留状态已备份：$guard"
+
+  systemctl stop x-ui || true
+  old="/usr/local/x-ui.pre-rollback-$"
+  if [[ -e /usr/local/x-ui ]]; then
+    mv -- /usr/local/x-ui "$old"
+  fi
+  if ! cp -a -- "$tmp/usr/local/x-ui" /usr/local/x-ui; then
+    rm -rf -- /usr/local/x-ui
+    if [[ -d "$old" ]]; then mv -- "$old" /usr/local/x-ui; fi
+    fail "程序复制失败，已尝试恢复当前程序目录；残留备份：$guard"
+  fi
+  install -d -m 0700 /etc/x-ui
+  rm -f -- /etc/x-ui/x-ui.db-wal /etc/x-ui/x-ui.db-shm
+  cp -a -- "$tmp/etc/x-ui/x-ui.db" /etc/x-ui/x-ui.db
+  cp -a -- "$tmp/usr/bin/x-ui" /usr/bin/x-ui
+  cp -a -- "$tmp/etc/systemd/system/x-ui.service" /etc/systemd/system/x-ui.service
+  if [[ -d "$tmp/etc/systemd/system/x-ui.service.d" ]]; then
+    mkdir -p /etc/systemd/system/x-ui.service.d
+    cp -a -- "$tmp/etc/systemd/system/x-ui.service.d/." /etc/systemd/system/x-ui.service.d/
+  fi
+  systemctl daemon-reload
+  systemctl enable --now x-ui
+  systemctl is-active --quiet x-ui ||
+    fail "回滚后的 x-ui 未启动。请使用紧急备份排查：$guard"
+  say "x-ui 已恢复快照版本。请手动验证面板及 Reality 节点。"
+  say "紧急备份保留在：$guard"
+  if [[ -d "$old" ]]; then
+    say "原程序目录保留在：$old（确认恢复成功后再手工清理）。"
+  fi
+  rm -rf -- "$tmp"
+  trap - EXIT
+}
+
 main() {
   local action="${1:-}" dir="${2:-}" new_ip="" apply=0
   case "$action" in
     create) [[ $# == 1 ]] || fail "create 不接受参数。"; create_snapshot ;;
     verify) [[ $# == 2 ]] || fail "用法：onekey-recovery verify 目录"; verify_snapshot "$dir" ;;
+    rollback)
+      [[ -n "$dir" ]] || fail "用法：onekey-recovery rollback 目录 [--apply]"
+      shift 2
+      while (( $# > 0 )); do
+        case "$1" in
+          --apply) apply=1; shift ;;
+          *) fail "未知参数：$1" ;;
+        esac
+      done
+      rollback_snapshot "$dir" "$apply"
+      ;;
     restore)
       [[ -n "$dir" ]] || fail "用法：onekey-recovery restore 目录 [--new-ip IPv4] [--apply]"
       shift 2
