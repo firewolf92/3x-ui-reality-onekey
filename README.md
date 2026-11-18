@@ -77,7 +77,7 @@ bash -n /root/onekey-install.sh
 bash /root/onekey-install.sh --cleanup-failed
 ```
 
-输入 `CLEANUP` 后会为部分安装文件创建本地备份，并停止/清理这次未完成的 3x-ui/Caddy/HAProxy 配置。**这是明确的人为破坏性清理，不是自动回滚**；它不会删除 APT 包或自动重置 UFW。仅当该工具留下了未完成安装标记时才能使用。完整清理后再考虑重新部署。
+输入 `CLEANUP` 后会为部分安装文件创建本地备份，并停止/清理这次未完成的 3x-ui/Caddy/HAProxy 配置。**这是明确的人为破坏性清理，不是自动回滚**；它会尝试卸载本次安装引入的 `caddy`、`haproxy` 软件包，以免残留 systemd 服务阻止再次安装；不会执行 `apt autoremove`，也不会重置 UFW。仅当该工具留下了未完成安装标记时才能使用。完整清理后再考虑重新部署。
 
 
 
