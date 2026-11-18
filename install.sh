@@ -262,17 +262,21 @@ HTML
   printf 'User-agent: *\nAllow: /\n' > "$SITE_ROOT/robots.txt"
 }
 
-configure_caddy() {
-  CADDY_TLS_PORT="$CADDY_TLS_PORT_DEFAULT"
-  cat > /etc/caddy/Caddyfile <<EOF_CADDY
+render_caddyfile() {
+  local output="$1"
+  cat > "$output" <<EOF_CADDY
 {
     email ${ACME_EMAIL}
     auto_https disable_redirects
     http_port 80
     https_port ${CADDY_TLS_PORT}
 }
-http://${SITE_DOMAIN} { redir https://${SITE_DOMAIN}{uri} permanent }
-http://${PANEL_DOMAIN} { redir https://${PANEL_DOMAIN}{uri} permanent }
+http://${SITE_DOMAIN} {
+    redir https://${SITE_DOMAIN}{uri} permanent
+}
+http://${PANEL_DOMAIN} {
+    redir https://${PANEL_DOMAIN}{uri} permanent
+}
 ${SITE_DOMAIN} {
     root * ${SITE_ROOT}
     encode zstd gzip
@@ -282,8 +286,23 @@ ${PANEL_DOMAIN} {
     reverse_proxy 127.0.0.1:${PANEL_PORT}
 }
 EOF_CADDY
+}
 
-  caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile
+configure_caddy() {
+  CADDY_TLS_PORT="$CADDY_TLS_PORT_DEFAULT"
+  local candidate
+  candidate=$(mktemp /etc/caddy/.Caddyfile.onekey.XXXXXXXX)
+  render_caddyfile "$candidate"
+  # Validation must complete BEFORE the live Caddyfile is replaced.
+  if ! caddy validate --config "$candidate" --adapter caddyfile; then
+    rm -f -- "$candidate"
+    die "Caddyfile 语法检查失败；没有覆盖当前配置。"
+  fi
+  if [[ -e /etc/caddy/Caddyfile ]]; then
+    cp -a -- /etc/caddy/Caddyfile "/etc/caddy/Caddyfile.pre-onekey.$(date -u +%Y%m%d%H%M%S).$$"
+  fi
+  install -m 0644 "$candidate" /etc/caddy/Caddyfile
+  rm -f -- "$candidate"
   systemctl enable --now caddy
   for _ in $(seq 1 45); do
     if ss -ltnH | awk '{print $4}' | grep -Eq "(:|\\])${CADDY_TLS_PORT}$"; then return 0; fi
@@ -292,7 +311,6 @@ EOF_CADDY
   journalctl -u caddy -n 80 --no-pager >&2 || true
   die "Caddy 没有在内部 TLS 端口启动。"
 }
-
 configure_haproxy() {
   cat > /etc/haproxy/haproxy.cfg <<EOF_HAPROXY
 global
