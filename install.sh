@@ -324,8 +324,8 @@ resolve_ssh_port() {
   else
     die "无法确定 SSH 端口。为避免 UFW 锁定，请设置 ONEKEY_SSH_PORT=实际端口。"
   fi
-  if [[ ! "$port" =~ ^[0-9]+$ ]]; then die "无效 SSH 端口：$port"; fi
-  if (( port < 1 || port > 65535 )); then die "无效 SSH 端口：$port"; fi
+  if [[ ! "$port" =~ ^[1-9][0-9]{0,4}$ ]]; then die "无效 SSH 端口：$port"; fi
+  if (( port > 65535 )); then die "无效 SSH 端口：$port"; fi
   SSH_PORT="$port"
   log "UFW 将保留 SSH TCP 端口：$SSH_PORT"
 }
