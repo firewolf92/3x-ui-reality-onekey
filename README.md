@@ -94,6 +94,38 @@ bash /root/onekey-install.sh --resume-failed
 
 **使用范围有限**：该入口只适用于 OneKey 在创建 Reality 入站、站点和项目配置之前中断的阶段。如果项目配置、站点或入站已写入，则会拒绝重复续装，应停止操作并人工排查。没有承诺任何中断状态都能自动恢复。还没有在真实 VPS 上完成续装验收。
 
+### Reality 入站已经创建、Caddyfile 验证失败：第二阶段恢复
+
+在 `--resume-failed` 成功创建 Reality 入站后，如果看到类似
+
+```text
+/etc/caddy/Caddyfile:7: Unexpected '}' because no matching opening brace
+```
+
+**不要再运行普通安装或 `--resume-failed`，更不要运行 `--cleanup-failed`**。此时原有 Reality UUID/密钥/入站必须保留，重新创建会导致客户端参数变化。
+
+本项目提供独立的 `resume-caddy.sh`，不会重新安装 3x-ui，也不会重新创建或修改任何入站。它会验证上次的失败状态、原站点、3x-ui 原凭据、入站 2443 的详细数据及新生成的 Caddyfile，并从原入站中读取 UUID、Short ID 和公钥。检查异常会拒绝续装。
+
+在 VPS 的 root 终端执行，**先只读检查**：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/firewolf92/3x-ui-reality-onekey/main/install.sh -o /root/install.sh
+curl -fsSL https://raw.githubusercontent.com/firewolf92/3x-ui-reality-onekey/main/resume-caddy.sh -o /root/resume-caddy.sh
+bash -n /root/install.sh
+bash -n /root/resume-caddy.sh
+bash /root/resume-caddy.sh --check
+```
+
+请按首次安装时的内容重新输入两个域名和证书邮箱；SNI 保持一致。**预检通过且确认是同一台干净 VPS 后**，再执行：
+
+```bash
+bash /root/resume-caddy.sh --apply
+```
+
+此步骤必须再输入 `RESUME` 才会写入配置。正式执行前会把 Caddyfile、HAProxy 原有配置与 SQLite 数据库备份到 root 私有目录，然后配置 Caddy/HAProxy/UFW，保存客户端链接和完整快照。
+
+若 `--check` 提示原入站公钥缺失、面板数据不符、端口异常，或服务器已经有其他站点/代理服务，请勿强行绕过检查，应先人工排查。脚本是为本项目此特定 Caddy 中断阶段编写，仍需在实际 VPS 上验收。
+
 ### 安装中断后的安全处理
 
 安装脚本会记录“尚未完成”的状态。如果部署中途失败，**不要直接反复执行安装命令**。优先保存终端日志并排查原因；确认需要放弃这次安装后，再下载当前脚本并在交互式 root 终端中清理：
