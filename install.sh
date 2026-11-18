@@ -98,11 +98,11 @@ cleanup_failed_install() {
   [[ -f "$INSTALL_MARKER" && ! -L "$INSTALL_MARKER" ]] ||
     die "没有本脚本创建的未完成安装标记；拒绝清理。"
   [[ -t 0 ]] || die "清理必须在交互式终端确认。"
-  printf '此操作将停止 x-ui/Caddy/HAProxy 并清理此次失败的安装。已存在的服务可能会中断。\n'
+  printf '将停止 x-ui/Caddy/HAProxy 并卸载失败安装时装入的 Caddy/HAProxy 软件包；其他基础软件包和 UFW 配置保持不变。\n'
   read -r -p '确认请输入 CLEANUP：' ans
   [[ "$ans" == CLEANUP ]] || die "用户取消。"
   local dir rel
-  dir="/root/3xui-onekey-backups/failed-install-$(date -u +%Y%m%d-%H%M%S)-$"
+  dir="/root/3xui-onekey-backups/failed-install-$(date -u +%Y%m%d-%H%M%S)-${BASHPID}"
   install -d -m 0700 "$dir"
   local -a save=()
   for rel in /etc/3xui-onekey /etc/x-ui /usr/local/x-ui /usr/bin/x-ui              /etc/systemd/system/x-ui.service /etc/systemd/system/x-ui.service.d              /etc/caddy/Caddyfile /etc/haproxy/haproxy.cfg /var/www/onekey-site; do
