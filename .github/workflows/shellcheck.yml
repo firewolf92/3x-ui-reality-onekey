@@ -13,7 +13,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Install ShellCheck
-        run: sudo apt-get update && sudo apt-get install -y shellcheck
+        run: sudo apt-get update && sudo apt-get install -y shellcheck jq
       - name: Bash syntax
         run: |
           bash -n install.sh
@@ -22,7 +22,10 @@ jobs:
           bash -n uninstall.sh
           bash -n recovery.sh
           bash -n tests/recovery-test.sh
+          bash -n tests/panel-auth-test.sh
       - name: ShellCheck
-        run: shellcheck install.sh status.sh update.sh uninstall.sh recovery.sh tests/recovery-test.sh
+        run: shellcheck install.sh status.sh update.sh uninstall.sh recovery.sh tests/recovery-test.sh tests/panel-auth-test.sh
       - name: Recovery safety tests
         run: bash tests/recovery-test.sh
+      - name: 3x-ui CSRF login and inbound integration
+        run: bash tests/panel-auth-test.sh
