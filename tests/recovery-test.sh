@@ -22,8 +22,9 @@ printf 'script\n' > "$tmp/archive/files/usr/bin/x-ui"
   )"
   printf 'arch=%s\n' "$(uname -m)"
 } > "$tmp/archive/metadata.txt"
+cp -- "$root/recovery.sh" "$tmp/archive/recovery.sh"
 tar -czf "$tmp/archive/snapshot.tar.gz" -C "$tmp/archive/files" .
-( cd "$tmp/archive"; sha256sum snapshot.tar.gz > snapshot.tar.gz.sha256 )
+( cd "$tmp/archive"; sha256sum snapshot.tar.gz recovery.sh metadata.txt > snapshot.tar.gz.sha256 )
 
 bash "$root/recovery.sh" verify "$tmp/archive"
 bash "$root/recovery.sh" restore "$tmp/archive" >/dev/null
@@ -36,7 +37,7 @@ fi
 # A checksum-valid but incomplete archive must not be accepted either.
 rm -f "$tmp/archive/files/usr/bin/x-ui"
 tar -czf "$tmp/archive/snapshot.tar.gz" -C "$tmp/archive/files" .
-( cd "$tmp/archive"; sha256sum snapshot.tar.gz > snapshot.tar.gz.sha256 )
+( cd "$tmp/archive"; sha256sum snapshot.tar.gz recovery.sh metadata.txt > snapshot.tar.gz.sha256 )
 if bash "$root/recovery.sh" verify "$tmp/archive" >/dev/null 2>&1; then
   echo "FAIL: incomplete archive was accepted" >&2
   exit 1
