@@ -20,5 +20,9 @@ jobs:
           bash -n status.sh
           bash -n update.sh
           bash -n uninstall.sh
+          bash -n recovery.sh
+          bash -n tests/recovery-test.sh
       - name: ShellCheck
-        run: shellcheck install.sh status.sh update.sh uninstall.sh
+        run: shellcheck install.sh status.sh update.sh uninstall.sh recovery.sh tests/recovery-test.sh
+      - name: Recovery safety tests
+        run: bash tests/recovery-test.sh
