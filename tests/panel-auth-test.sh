@@ -112,6 +112,7 @@ PANEL_PORT=$(cat "$tmp/port")
 PANEL_BASE="/fixturebase/"
 PANEL_USER="testuser"
 PANEL_PASSWORD="testpass"
+REALITY_SNI="www.microsoft.com"
 XRAY_INTERNAL_PORT_DEFAULT=2443
 panel_login
 ensure_reality_port_free_in_panel
