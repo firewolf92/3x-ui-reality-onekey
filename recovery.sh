@@ -3,7 +3,7 @@
 set -Eeuo pipefail
 umask 077
 
-BACKUP_ROOT="${ONEKEY_BACKUP_ROOT:-/root/3xui-onekey-backups}"
+BACKUP_ROOT="/root/3xui-onekey-backups"
 SNAPSHOT_NAME="snapshot.tar.gz"
 
 fail() { printf '[x] %s\n' "$*" >&2; exit 1; }
@@ -55,7 +55,7 @@ require_source() {
   [[ -x /usr/local/x-ui/x-ui ]] || fail "缺少已安装的 3x-ui 可执行程序。"
   [[ -r /etc/systemd/system/x-ui.service ]] || fail "缺少 x-ui.service。"
   [[ -r /etc/caddy/Caddyfile && -r /etc/haproxy/haproxy.cfg ]] || fail "缺少反向代理配置。"
-  [[ -x /usr/bin/python3 || -x /bin/python3 ]] || fail "一致性备份需要 python3。"
+  command -v python3 >/dev/null || fail "一致性备份需要 python3。"
   if [[ -f /etc/default/x-ui ]] && grep -Eq '^XUI_DB_TYPE=postgres' /etc/default/x-ui; then
     fail "检测到 PostgreSQL；请单独使用 pg_dump 备份，本工具不会生成不完整快照。"
   fi
