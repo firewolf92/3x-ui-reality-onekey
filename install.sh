@@ -467,29 +467,11 @@ EOF_SUMMARY
 # Only resumes the narrow failure window after official 3x-ui installation
 # and before this script has created the Reality inbound or written our state.
 load_existing_panel() {
-  local stage="${1:-early}" result_file=/etc/x-ui/install-result.env
+  local result_file=/etc/x-ui/install-result.env
   [[ -f "$INSTALL_MARKER" && ! -L "$INSTALL_MARKER" ]] ||
     die "没有上次安装未完成标记，拒绝续装。"
-  [[ ! -e "$STATE_FILE" && ! -e "$CLIENT_FILE" ]] ||
-    die "已写入 OneKey 正式部署状态；禁止重复续装。"
-  case "$stage" in
-    early)
-      [[ ! -e "$SITE_ROOT" ]] || die "检测到已创建的站点；不能执行早期续装，请检查 --resume-caddy 适用条件。"
-      ;;
-    caddy)
-      [[ -f "$SITE_ROOT/index.html" && ! -L "$SITE_ROOT" ]] ||
-        die "缺少上次脚本生成的站点文件；拒绝 Caddy 阶段续装。"
-      grep -Fq 'ASTER SYSTEMS' "$SITE_ROOT/index.html" ||
-        die "站点不是 OneKey 默认站点；拒绝覆盖。"
-      [[ -f /etc/caddy/Caddyfile && ! -L /etc/caddy/Caddyfile ]] ||
-        die "缺少上次生成的 Caddyfile，拒绝续装。"
-      [[ ! -e /usr/local/sbin/onekey-status ]] ||
-        die "检测到已安装的 OneKey 助手；不是 Caddy 阶段失败状态。"
-      ! systemctl is-active --quiet haproxy ||
-        die "HAProxy 已运行，拒绝重复配置。"
-      ;;
-    *) die "未知的续装阶段。";;
-  esac
+  [[ ! -e "$STATE_FILE" && ! -e "$CLIENT_FILE" && ! -e "$SITE_ROOT" ]] ||
+    die "检测到已经生成的 OneKey 配置或站点；拒绝从早期阶段重复续装。"
   [[ -f "$result_file" && ! -L "$result_file" && -r "$result_file" ]] ||
     die "缺少官方 root 专用的 3x-ui 安装凭据文件，不能续装。"
   [[ "$(stat -c %u "$result_file")" == 0 ]] ||
@@ -516,8 +498,10 @@ load_existing_panel() {
   [[ -x /usr/local/x-ui/x-ui && -s /etc/x-ui/x-ui.db ]] ||
     die "已安装 3x-ui 程序或 SQLite 数据库缺失，拒绝续装。"
   systemctl is-active --quiet x-ui || die "x-ui 未运行，拒绝续装。"
-  if [[ "$stage" == early ]]; then
-    if ss -ltnH | awk '{print $4}' | grep -Eq ':2443
+  if ss -ltnH | awk '{print $4}' | grep -Eq ':2443$'; then
+    die "Reality 内部端口 2443 已占用；请人工核查，不自动覆盖。"
+  fi
+  log "已确认可续装的 3x-ui 实例；将复用原有账号、端口及面板路径。"
 }
 
 ensure_reality_port_free_in_panel() {
