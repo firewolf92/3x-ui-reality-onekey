@@ -480,44 +480,9 @@ load_existing_panel() {
   [[ -x /usr/local/x-ui/x-ui && -s /etc/x-ui/x-ui.db ]] ||
     die "已安装 3x-ui 程序或 SQLite 数据库缺失，拒绝续装。"
   systemctl is-active --quiet x-ui || die "x-ui 未运行，拒绝续装。"
-  [[ -z "$(ss -ltnH | awk '{print $4}' | grep -E '(:|\\])2443  if [[ "${1:-}" == "--cleanup-failed" && $# -eq 1 ]]; then
-    cleanup_failed_install
-    return
-  fi
-  (( $# == 0 )) || die "不支持的安装参数。"
-  load_os
-  prompt_values
-  resolve_ssh_port
-  preflight_clean_host
-  mark_install_incomplete
-  log "安装基础依赖..."
-  install_base_packages
-  install_caddy
-  get_public_ipv4
-  log "检测到 VPS IPv4: $PUBLIC_IPV4"
-  verify_dns "$SITE_DOMAIN"
-  verify_dns "$PANEL_DOMAIN"
-  install_3xui
-  wait_panel
-  panel_login
-  create_reality_inbound
-  create_site
-  configure_caddy
-  configure_haproxy
-  configure_firewall
-  save_state
-  install_helpers
-  health_check
-  rm -f -- "$INSTALL_MARKER"
-  if ! /usr/local/sbin/onekey-recovery create; then
-    printf '[!] 首次恢复快照创建失败；服务已完成部署，请检查磁盘空间和数据库后手动执行 onekey-recovery create。\n' >&2
-  fi
-  print_summary
-}
-
-main "$@"
- || true)" ]] ||
+  if ss -ltnH | awk '{print $4}' | grep -Eq ':2443$'; then
     die "Reality 内部端口 2443 已占用；请人工核查，不自动覆盖。"
+  fi
   log "已确认可续装的 3x-ui 实例；将复用原有账号、端口及面板路径。"
 }
 
