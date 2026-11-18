@@ -16,6 +16,13 @@ os_id() {
     printf '%s' "$ID"
   )
 }
+os_version() {
+  (
+    # shellcheck disable=SC1091
+    . /etc/os-release
+    printf '%s' "${VERSION_ID:-unknown}"
+  )
+}
 
 usage() {
   cat <<'HELP'
@@ -23,11 +30,13 @@ usage() {
   onekey-recovery create
   onekey-recovery verify /path/to/recovery-directory
   onekey-recovery restore /path/to/recovery-directory [--new-ip IPv4] [--apply]
+  onekey-recovery rollback /path/to/recovery-directory [--apply]
 
 create  只读备份当前 3x-ui、Xray、配置、SQLite 数据库及代理配置。
 verify  验证快照完整性；不修改系统。
 restore 默认仅预检；加 --apply 后才会在全新、未部署 3x-ui 的服务器恢复。
-恢复要求相同的系统发行版与 CPU 架构，并预装 Caddy/HAProxy。
+rollback 默认仅预检；加 --apply 后才能恢复原服务器上的 3x-ui。
+恢复要求相同的系统发行版、版本与 CPU 架构，并预装 Caddy/HAProxy。
 HELP
 }
 
@@ -99,6 +108,7 @@ PY
   {
     printf 'schema=1\n'
     printf 'os_id=%s\n' "$(os_id)"
+    printf 'os_version=%s\n' "$(os_version)"
     printf 'arch=%s\n' "$(uname -m)"
     printf 'created_utc=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
   } > "$pending/metadata.txt"
@@ -147,13 +157,20 @@ verify_snapshot() {
   say "SHA256 和必需文件检查通过：$dir"
 }
 
-restore_snapshot() {
-  local dir="$1" new_ip="$2" apply="$3" saved_os saved_arch tmp rel answer old_ip
-  verify_snapshot "$dir"
+check_snapshot_host() {
+  local dir="$1" saved_os saved_version saved_arch
   saved_os=$(sed -n 's/^os_id=//p' "$dir/metadata.txt")
+  saved_version=$(sed -n 's/^os_version=//p' "$dir/metadata.txt")
   saved_arch=$(sed -n 's/^arch=//p' "$dir/metadata.txt")
-  [[ "$saved_os" == "$(os_id)" && "$saved_arch" == "$(uname -m)" ]] ||
-    fail "系统或架构不匹配；只支持相同发行版与架构的恢复。"
+  [[ -n "$saved_version" ]] || fail "旧快照没有系统版本信息；禁止自动恢复，需人工核对。"
+  [[ "$saved_os" == "$(os_id)" && "$saved_version" == "$(os_version)" && "$saved_arch" == "$(uname -m)" ]] ||
+    fail "OS 发行版、版本或 CPU 架构不匹配；拒绝恢复。"
+}
+
+restore_snapshot() {
+  local dir="$1" new_ip="$2" apply="$3" tmp rel answer old_ip
+  verify_snapshot "$dir"
+  check_snapshot_host "$dir"
   if [[ -n "$new_ip" ]]; then
     [[ "$new_ip" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]] || fail "--new-ip 需要 IPv4 地址。"
     IFS=. read -r a b c d <<< "$new_ip"
