@@ -34,6 +34,16 @@ if bash "$root/recovery.sh" verify "$tmp/archive" >/dev/null 2>&1; then
   exit 1
 fi
 
+# A tampered recovery helper is rejected even when the archive is unchanged.
+tar -czf "$tmp/archive/snapshot.tar.gz" -C "$tmp/archive/files" .
+( cd "$tmp/archive"; sha256sum snapshot.tar.gz recovery.sh metadata.txt > snapshot.tar.gz.sha256 )
+printf 'tamper' >> "$tmp/archive/recovery.sh"
+if bash "$root/recovery.sh" verify "$tmp/archive" >/dev/null 2>&1; then
+  echo "FAIL: tampered recovery script was accepted" >&2
+  exit 1
+fi
+cp -- "$root/recovery.sh" "$tmp/archive/recovery.sh"
+
 # A checksum-valid but incomplete archive must not be accepted either.
 rm -f "$tmp/archive/files/usr/bin/x-ui"
 tar -czf "$tmp/archive/snapshot.tar.gz" -C "$tmp/archive/files" .
