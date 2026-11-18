@@ -16,7 +16,7 @@ REALITY_PORT="443"
 log() { printf '\033[1;32m[+]\033[0m %s\n' "$*"; }
 die() { printf '\033[1;31m[x]\033[0m %s\n' "$*" >&2; exit 1; }
 
-cleanup() { rm -f /tmp/3xui-onekey-cookie.txt; }
+cleanup() { if [[ -n "${COOKIE_FILE:-}" ]]; then rm -f -- "$COOKIE_FILE"; fi; }
 trap cleanup EXIT
 trap 'die "安装过程中发生错误（行 $LINENO）。请保存屏幕输出后再排查，不要重复强行安装。"' ERR
 
@@ -183,14 +183,29 @@ wait_panel() {
   die "3x-ui 面板在本机端口没有正常响应。"
 }
 
+fetch_panel_csrf() {
+  local result
+  result=$(curl -fsS --max-time 10 -b "$COOKIE_FILE" -c "$COOKIE_FILE" \
+    "$PANEL_LOCAL/csrf-token") || die "无法取得 3x-ui CSRF Token。"
+  CSRF_TOKEN=$(jq -er 'select(.success == true) | .obj | strings | select(length > 0)' \
+    <<< "$result") || die "3x-ui 未返回有效 CSRF Token。"
+}
+
 panel_login() {
   PANEL_LOCAL="http://127.0.0.1:${PANEL_PORT}${PANEL_BASE%/}"
   local payload response
+  COOKIE_FILE=$(mktemp /tmp/3xui-onekey-cookie.XXXXXXXX)
+  chmod 0600 "$COOKIE_FILE"
+  fetch_panel_csrf
   payload=$(jq -n --arg u "$PANEL_USER" --arg p "$PANEL_PASSWORD" '{username:$u,password:$p}')
-  response=$(curl -fsS -c /tmp/3xui-onekey-cookie.txt -H 'Content-Type: application/json' --data "$payload" "$PANEL_LOCAL/login")
-  jq -e '.success == true' <<<"$response" >/dev/null || die "3x-ui API 登录失败: $response"
+  response=$(curl -fsS --max-time 10 -b "$COOKIE_FILE" -c "$COOKIE_FILE" \
+    -H "X-CSRF-Token: $CSRF_TOKEN" -H 'Content-Type: application/json' \
+    --data "$payload" "$PANEL_LOCAL/login") || die "3x-ui 自动登录请求失败。"
+  jq -e '.success == true' <<< "$response" >/dev/null ||
+    die "3x-ui API 登录失败；请确认安装凭据及后台安全设置。"
+  # 3x-ui clears anonymous CSRF state when login privileges change.
+  fetch_panel_csrf
 }
-
 create_reality_inbound() {
   UUID=$(cat /proc/sys/kernel/random/uuid)
   SHORT_ID=$(openssl rand -hex 8)
@@ -198,7 +213,7 @@ create_reality_inbound() {
   XRAY_INTERNAL_PORT="$XRAY_INTERNAL_PORT_DEFAULT"
 
   local key_json private_key public_key payload response
-  key_json=$(curl -fsS -b /tmp/3xui-onekey-cookie.txt "$PANEL_LOCAL/panel/api/server/getNewX25519Cert")
+  key_json=$(curl -fsS -b "$COOKIE_FILE" "$PANEL_LOCAL/panel/api/server/getNewX25519Cert")
   jq -e '.success == true' <<<"$key_json" >/dev/null || die "Reality X25519 密钥生成失败: $key_json"
   private_key=$(jq -r '.obj.privateKey' <<<"$key_json")
   public_key=$(jq -r '.obj.publicKey' <<<"$key_json")
@@ -214,7 +229,7 @@ create_reality_inbound() {
       sniffing:{enabled:true,destOverride:["http","tls","quic"],metadataOnly:false,routeOnly:false}
     }')
 
-  response=$(curl -fsS -b /tmp/3xui-onekey-cookie.txt -H 'Content-Type: application/json' --data "$payload" "$PANEL_LOCAL/panel/api/inbounds/add")
+  response=$(curl -fsS -b "$COOKIE_FILE" -H "X-CSRF-Token: $CSRF_TOKEN" -H 'Content-Type: application/json' --data "$payload" "$PANEL_LOCAL/panel/api/inbounds/add")
   jq -e '.success == true' <<<"$response" >/dev/null || die "创建 Reality 入站失败: $response"
   REALITY_PUBLIC_KEY="$public_key"
 
@@ -430,10 +445,102 @@ ${CLIENT_LINK}
 EOF_SUMMARY
 }
 
+
+# Only resumes the narrow failure window after official 3x-ui installation
+# and before this script has created the Reality inbound or written our state.
+load_existing_panel() {
+  local result_file=/etc/x-ui/install-result.env
+  [[ -f "$INSTALL_MARKER" && ! -L "$INSTALL_MARKER" ]] ||
+    die "没有上次安装未完成标记，拒绝续装。"
+  [[ ! -e "$STATE_FILE" && ! -e "$CLIENT_FILE" && ! -e "$SITE_ROOT" ]] ||
+    die "检测到已经生成的 OneKey 配置或站点；拒绝从早期阶段重复续装。"
+  [[ -f "$result_file" && ! -L "$result_file" && -r "$result_file" ]] ||
+    die "缺少官方 root 专用的 3x-ui 安装凭据文件，不能续装。"
+  [[ "$(stat -c %u "$result_file")" == 0 ]] ||
+    die "安装凭据文件不是 root 所有，拒绝加载。"
+  [[ ! -e /etc/default/x-ui || "$(stat -c %u /etc/default/x-ui)" == 0 ]] ||
+    die "检测到异常的 3x-ui 配置文件权限。"
+  # Official installer writes a root-only shell-escaped file using printf %q.
+  # shellcheck disable=SC1090
+  . "$result_file"
+  [[ "${XUI_DB_TYPE:-sqlite}" == sqlite ]] || die "仅支持 SQLite 3x-ui 部署续装。"
+  [[ -n "${XUI_USERNAME:-}" && -n "${XUI_PASSWORD:-}" ]] ||
+    die "安装凭据缺少用户或密码。"
+  [[ "${XUI_PANEL_PORT:-}" =~ ^[1-9][0-9]{0,4}$ ]] ||
+    die "安装凭据中的面板端口不合法。"
+  (( XUI_PANEL_PORT <= 65535 )) || die "面板端口超出范围。"
+  [[ -n "${XUI_WEB_BASE_PATH:-}" ]] || die "缺少原有面板路径。"
+  PANEL_BASE="/${XUI_WEB_BASE_PATH#/}"
+  PANEL_BASE="${PANEL_BASE%/}/"
+  [[ "$PANEL_BASE" =~ ^/[A-Za-z0-9_-]{8,64}/$ ]] ||
+    die "原有面板路径格式不符合 OneKey 预期，拒绝续装。"
+  PANEL_USER="$XUI_USERNAME"
+  PANEL_PASSWORD="$XUI_PASSWORD"
+  PANEL_PORT="$XUI_PANEL_PORT"
+  [[ -x /usr/local/x-ui/x-ui && -s /etc/x-ui/x-ui.db ]] ||
+    die "已安装 3x-ui 程序或 SQLite 数据库缺失，拒绝续装。"
+  systemctl is-active --quiet x-ui || die "x-ui 未运行，拒绝续装。"
+  if ss -ltnH | awk '{print $4}' | grep -Eq ':2443$'; then
+    die "Reality 内部端口 2443 已占用；请人工核查，不自动覆盖。"
+  fi
+  log "已确认可续装的 3x-ui 实例；将复用原有账号、端口及面板路径。"
+}
+
+ensure_reality_port_free_in_panel() {
+  local result
+  result=$(curl -fsS --max-time 10 -b "$COOKIE_FILE" \
+    "$PANEL_LOCAL/panel/api/inbounds/list") ||
+    die "无法检查面板已有入站；拒绝创建重复节点。"
+  jq -e '.success == true and (.obj | type == "array")' <<< "$result" >/dev/null ||
+    die "无法识别已有入站列表；拒绝重复创建节点。"
+  if jq -e --argjson p "$XRAY_INTERNAL_PORT_DEFAULT" \
+     '.obj[] | select((.port | tonumber) == $p)' <<< "$result" >/dev/null; then
+    die "面板中已有 2443 端口入站；拒绝重复创建节点。"
+  fi
+}
+
+resume_failed_install() {
+  require_root
+  load_os
+  # No packages or existing 3x-ui installation are modified during preflight.
+  prompt_values
+  resolve_ssh_port
+  load_existing_panel
+  get_public_ipv4
+  verify_dns "$SITE_DOMAIN"
+  verify_dns "$PANEL_DOMAIN"
+  log "继续未完成的一键部署，不重装 3x-ui..."
+  complete_install 1
+}
+
+complete_install() {
+  local resumed="$1"
+  wait_panel
+  panel_login
+  if [[ "$resumed" == 1 ]]; then ensure_reality_port_free_in_panel; fi
+  create_reality_inbound
+  create_site
+  configure_caddy
+  configure_haproxy
+  configure_firewall
+  save_state
+  install_helpers
+  health_check
+  rm -f -- "$INSTALL_MARKER"
+  if ! /usr/local/sbin/onekey-recovery create; then
+    printf '[!] 首次恢复快照创建失败；服务已完成部署，请检查磁盘空间和数据库后手动执行 onekey-recovery create。\n' >&2
+  fi
+  print_summary
+}
+
 main() {
   require_root
   if [[ "${1:-}" == "--cleanup-failed" && $# -eq 1 ]]; then
     cleanup_failed_install
+    return
+  fi
+  if [[ "${1:-}" == "--resume-failed" && $# -eq 1 ]]; then
+    resume_failed_install
     return
   fi
   (( $# == 0 )) || die "不支持的安装参数。"
@@ -450,21 +557,9 @@ main() {
   verify_dns "$SITE_DOMAIN"
   verify_dns "$PANEL_DOMAIN"
   install_3xui
-  wait_panel
-  panel_login
-  create_reality_inbound
-  create_site
-  configure_caddy
-  configure_haproxy
-  configure_firewall
-  save_state
-  install_helpers
-  health_check
-  rm -f -- "$INSTALL_MARKER"
-  if ! /usr/local/sbin/onekey-recovery create; then
-    printf '[!] 首次恢复快照创建失败；服务已完成部署，请检查磁盘空间和数据库后手动执行 onekey-recovery create。\n' >&2
-  fi
-  print_summary
+  complete_install 0
 }
 
-main "$@"
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+  main "$@"
+fi
