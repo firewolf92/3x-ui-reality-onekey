@@ -123,7 +123,7 @@ install_3xui() {
   PANEL_BASE="/$(openssl rand -hex 10)/"
 
   log "安装 3x-ui 官方稳定版（无人值守模式）..."
-  XUI_NONINTERACTIVE=1   XUI_USERNAME="$PANEL_USER"   XUI_PASSWORD="$PANEL_PASSWORD"   XUI_PANEL_PORT="$PANEL_PORT"   XUI_WEB_BASE_PATH="$PANEL_BASE"   XUI_SSL_MODE=none   bash <(curl -fsSL https://raw.githubusercontent.com/MHSanaei/3x-ui/master/install.sh)
+  XUI_NONINTERACTIVE=1   XUI_USERNAME="$PANEL_USER"   XUI_PASSWORD="$PANEL_PASSWORD"   XUI_PANEL_PORT="$PANEL_PORT"   XUI_WEB_BASE_PATH="$PANEL_BASE"   XUI_SSL_MODE=none   bash <(curl -fsSL https://raw.githubusercontent.com/MHSanaei/3x-ui/main/install.sh)
 
   [[ -r /etc/x-ui/install-result.env ]] || die "3x-ui 安装结果文件缺失。"
   systemctl is-active --quiet x-ui || die "3x-ui 服务未正常启动。"
