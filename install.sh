@@ -310,10 +310,28 @@ EOF_HAPROXY
   systemctl is-active --quiet haproxy || die "HAProxy 启动失败。"
 }
 
+resolve_ssh_port() {
+  local port="" candidates=""
+  if [[ -n "${ONEKEY_SSH_PORT:-}" ]]; then
+    port="$ONEKEY_SSH_PORT"
+  elif [[ -n "${SSH_CONNECTION:-}" ]]; then
+    port=$(awk '{print $4}' <<< "$SSH_CONNECTION")
+  elif command -v sshd >/dev/null 2>&1; then
+    candidates=$(sshd -T 2>/dev/null | awk '$1 == "port" {print $2}' | sort -u)
+    [[ $(wc -w <<< "$candidates") -eq 1 ]] ||
+      die "无法唯一确定 SSH 端口；请显式传入 ONEKEY_SSH_PORT=实际端口。"
+    port="$candidates"
+  else
+    die "无法确定 SSH 端口。为避免 UFW 锁定，请设置 ONEKEY_SSH_PORT=实际端口。"
+  fi
+  [[ "$port" =~ ^[0-9]+$ ]] && (( port >= 1 && port <= 65535 )) ||
+    die "无效 SSH 端口：$port"
+  SSH_PORT="$port"
+  log "UFW 将保留 SSH TCP 端口：$SSH_PORT"
+}
+
 configure_firewall() {
-  local ssh_port="22"
-  if [[ -n "${SSH_CONNECTION:-}" ]]; then ssh_port=$(awk '{print $4}' <<<"$SSH_CONNECTION"); fi
-  [[ "$ssh_port" =~ ^[0-9]+$ ]] || ssh_port=22
+  local ssh_port="$SSH_PORT"
   ufw --force reset >/dev/null
   ufw default deny incoming >/dev/null
   ufw default allow outgoing >/dev/null
@@ -416,6 +434,7 @@ main() {
   (( $# == 0 )) || die "不支持的安装参数。"
   load_os
   prompt_values
+  resolve_ssh_port
   preflight_clean_host
   mark_install_incomplete
   log "安装基础依赖..."
