@@ -6,7 +6,7 @@ umask 077
 [[ -r /etc/3xui-onekey/config.env ]] || { echo "未找到部署状态文件。" >&2; exit 1; }
 [[ -x /usr/local/sbin/onekey-recovery ]] || {
   echo "缺少 onekey-recovery，已安全停止更新。" >&2
-  echo "请先按照 README 的“已有 VPS 启用恢复保护”步骤安装恢复助手。" >&2
+  echo "请先按照 README 中的旧 VPS 安装说明启用恢复助手。" >&2
   exit 1
 }
 
@@ -19,10 +19,10 @@ if ! curl -fsSL --retry 3 --connect-timeout 15 --max-time 90 "$upstream" -o "$wo
   echo "无法下载官方更新脚本；现有服务未更改。" >&2
   exit 1
 fi
-[[ -s "$workdir/upstream-update.sh" ]] && bash -n "$workdir/upstream-update.sh" || {
+if [[ ! -s "$workdir/upstream-update.sh" ]] || ! bash -n "$workdir/upstream-update.sh"; then
   echo "下载的官方更新脚本无效；现有服务未更改。" >&2
   exit 1
-}
+fi
 
 # A complete, hash-checked recovery snapshot (including current Xray and x-ui binaries)
 # is required; never continue an update with only an unverified database copy.
