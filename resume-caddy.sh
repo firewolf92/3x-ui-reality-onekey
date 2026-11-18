@@ -41,7 +41,7 @@ load_saved_panel_credentials() {
   [[ $(stat -c %u "$file") == 0 ]] ||
     die "安装凭据并非 root 所有，拒绝加载。"
   # Official 3x-ui emits a root-owned, shell-escaped file with printf %q.
-  # shellcheck disable=SC1091
+  # shellcheck disable=SC1090
   . "$file"
   [[ "${XUI_DB_TYPE:-sqlite}" == sqlite ]] || die "仅支持 SQLite。"
   [[ -n "${XUI_USERNAME:-}" && -n "${XUI_PASSWORD:-}" ]] ||
