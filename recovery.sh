@@ -154,7 +154,75 @@ verify_snapshot() {
     ./usr/bin/x-ui; do
     grep -Fxq "$name" <<< "$names" || fail "快照缺少文件：$name"
   done
-  say "SHA256 和必需文件检查通过：$dir"
+  # SHA256 detects damage, while this independent check rejects path/link
+  # escapes before GNU tar is allowed to extract anything on the host.
+  python3 - "$dir/$SNAPSHOT_NAME" <<'PY'
+import posixpath
+import sys
+import tarfile
+
+allowed = (
+    "etc/3xui-onekey", "etc/x-ui", "etc/default/x-ui",
+    "etc/caddy/Caddyfile", "etc/haproxy/haproxy.cfg",
+    "etc/systemd/system/x-ui.service",
+    "etc/systemd/system/x-ui.service.d",
+    "usr/local/x-ui", "usr/bin/x-ui",
+    "usr/local/sbin/onekey-status", "usr/local/sbin/onekey-update",
+    "usr/local/sbin/onekey-uninstall", "usr/local/sbin/onekey-recovery",
+    "var/www/onekey-site",
+)
+required = {
+    "etc/3xui-onekey/config.env",
+    "etc/x-ui/x-ui.db",
+    "etc/caddy/Caddyfile",
+    "etc/haproxy/haproxy.cfg",
+    "etc/systemd/system/x-ui.service",
+    "usr/local/x-ui/x-ui",
+    "usr/bin/x-ui",
+}
+def allowed_path(path):
+    return any(path == a or path.startswith(a + "/") for a in allowed)
+
+with tarfile.open(sys.argv[1], mode="r:gz") as archive:
+    members = archive.getmembers()
+    regular = set()
+    symlinks = set()
+    for member in members:
+        raw = member.name
+        if raw == "." or raw == "./":
+            if not member.isdir():
+                raise SystemExit("archive root is not directory")
+            continue
+        path = raw[2:] if raw.startswith("./") else raw
+        pieces = path.rstrip("/").split("/")
+        if raw.startswith("/") or not path or any(p in ("", ".", "..") for p in pieces):
+            raise SystemExit(f"unsafe archive member: {raw}")
+        if not allowed_path(path) and not (
+            member.isdir() and any(a.startswith(path + "/") for a in allowed)
+        ):
+            raise SystemExit(f"unexpected archive member: {path}")
+        if not (member.isfile() or member.isdir() or member.issym() or member.islnk()):
+            raise SystemExit(f"unsupported archive member type: {path}")
+        if member.isfile():
+            regular.add(path)
+        if member.issym() or member.islnk():
+            if posixpath.isabs(member.linkname):
+                raise SystemExit(f"absolute link rejected: {path}")
+            origin = posixpath.dirname(path) if member.issym() else ""
+            target = posixpath.normpath(posixpath.join(origin, member.linkname))
+            if target == ".." or target.startswith("../") or not allowed_path(target):
+                raise SystemExit(f"escaping link rejected: {path}")
+            if member.issym():
+                symlinks.add(path)
+    for member in members:
+        path = member.name.removeprefix("./").rstrip("/")
+        if any(path.startswith(link + "/") for link in symlinks):
+            raise SystemExit(f"member beneath symlink rejected: {path}")
+    if not required <= regular:
+        raise SystemExit(f"required regular files missing: {sorted(required - regular)}")
+PY
+  say "SHA256、文件路径和关键文件类型验证通过：$dir"
+}
 }
 
 check_snapshot_host() {
