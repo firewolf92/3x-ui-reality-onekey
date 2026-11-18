@@ -7,6 +7,7 @@ PROJECT_DIR="/etc/3xui-onekey"
 STATE_FILE="$PROJECT_DIR/config.env"
 CLIENT_FILE="$PROJECT_DIR/client-link.txt"
 SITE_ROOT="/var/www/onekey-site"
+INSTALL_MARKER="$PROJECT_DIR/.installation-incomplete"
 XRAY_INTERNAL_PORT_DEFAULT="2443"
 CADDY_TLS_PORT_DEFAULT="8443"
 REALITY_SNI_DEFAULT="www.microsoft.com"
@@ -68,6 +69,9 @@ prompt_values() {
 }
 
 preflight_clean_host() {
+  if [[ -e "$INSTALL_MARKER" ]]; then
+    die "发现上次未完成的安装记录。请先检查机器；确需清理时使用 install.sh --cleanup-failed。"
+  fi
   if [[ -e /etc/x-ui/x-ui.db || -e /usr/local/x-ui ]]; then
     die "检测到现有 3x-ui/x-ui。第一版仅支持干净 VPS，为避免覆盖现有配置已停止。"
   fi
@@ -79,6 +83,42 @@ preflight_clean_host() {
     used=$(ss -ltnH | awk '{print $4}' | grep -E '(:80|:443)$' || true)
     [[ -z "$used" ]] || die "端口 80/443 已被占用:\n$used"
   fi
+}
+
+mark_install_incomplete() {
+  install -d -m 0700 "$PROJECT_DIR"
+  printf 'started_utc=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$INSTALL_MARKER"
+  chmod 0600 "$INSTALL_MARKER"
+}
+
+# Deliberate, manual cleanup only for an installation that this script marked
+# incomplete. It never changes APT packages or existing firewall/SSH rules.
+cleanup_failed_install() {
+  require_root
+  [[ -f "$INSTALL_MARKER" && ! -L "$INSTALL_MARKER" ]] ||
+    die "没有本脚本创建的未完成安装标记；拒绝清理。"
+  [[ -t 0 ]] || die "清理必须在交互式终端确认。"
+  printf '此操作将停止 x-ui/Caddy/HAProxy 并清理此次失败的安装。已存在的服务可能会中断。\n'
+  read -r -p '确认请输入 CLEANUP：' ans
+  [[ "$ans" == CLEANUP ]] || die "用户取消。"
+  local dir rel
+  dir="/root/3xui-onekey-backups/failed-install-$(date -u +%Y%m%d-%H%M%S)-$"
+  install -d -m 0700 "$dir"
+  local -a save=()
+  for rel in /etc/3xui-onekey /etc/x-ui /usr/local/x-ui /usr/bin/x-ui              /etc/systemd/system/x-ui.service /etc/systemd/system/x-ui.service.d              /etc/caddy/Caddyfile /etc/haproxy/haproxy.cfg /var/www/onekey-site; do
+    [[ -e "$rel" || -L "$rel" ]] && save+=("$rel")
+  done
+  if (( ${#save[@]} > 0 )); then
+    tar -czf "$dir/partial-state.tar.gz" "${save[@]}"
+    ( cd "$dir"; sha256sum partial-state.tar.gz > partial-state.tar.gz.sha256 )
+  fi
+  for svc in haproxy caddy x-ui; do
+    systemctl disable --now "$svc" 2>/dev/null || true
+  done
+  rm -rf -- /usr/local/x-ui /etc/x-ui /etc/systemd/system/x-ui.service.d     /etc/3xui-onekey /var/www/onekey-site
+  rm -f -- /usr/bin/x-ui /etc/systemd/system/x-ui.service     /etc/caddy/Caddyfile /etc/haproxy/haproxy.cfg     /usr/local/sbin/onekey-status /usr/local/sbin/onekey-update     /usr/local/sbin/onekey-uninstall /usr/local/sbin/onekey-recovery
+  systemctl daemon-reload
+  printf '清理完成；部分状态已保存至 %s。软件包及 UFW 规则未删除。\n' "$dir"
 }
 
 install_base_packages() {
@@ -324,8 +364,19 @@ health_check() {
   ss -ltnH | awk '{print $4}' | grep -Eq '(:|\])443$' || die "健康检查失败: 公网 443 未监听。"
   ss -ltnH | awk '{print $4}' | grep -Eq "(:|\\])${XRAY_INTERNAL_PORT}$" || die "健康检查失败: Xray 内部端口未监听。"
   ss -ltnH | awk '{print $4}' | grep -Eq "(:|\\])${CADDY_TLS_PORT}$" || die "健康检查失败: Caddy 内部 TLS 端口未监听。"
-  curl -fsS --resolve "${SITE_DOMAIN}:443:127.0.0.1" "https://${SITE_DOMAIN}/" >/dev/null || die "健康检查失败: HTTPS 网站不可访问。"
-  curl -fsS --resolve "${PANEL_DOMAIN}:443:127.0.0.1" "https://${PANEL_DOMAIN}${PANEL_BASE}" >/dev/null || die "健康检查失败: HTTPS 面板不可访问。"
+  local ok=0
+  for _ in $(seq 1 60); do
+    if curl -fsS --max-time 5 --resolve "${SITE_DOMAIN}:443:127.0.0.1" "https://${SITE_DOMAIN}/" >/dev/null 2>&1 &&
+      curl -fsS --max-time 5 --resolve "${PANEL_DOMAIN}:443:127.0.0.1" "https://${PANEL_DOMAIN}${PANEL_BASE}" >/dev/null 2>&1; then
+      ok=1
+      break
+    fi
+    sleep 2
+  done
+  if [[ "$ok" != 1 ]]; then
+    journalctl -u caddy -n 60 --no-pager >&2 || true
+    die "健康检查失败: 120 秒内 HTTPS 网站或面板未通过检查，请排查 DNS、ACME 证书和 Caddy。"
+  fi
 }
 
 print_summary() {
@@ -358,9 +409,15 @@ EOF_SUMMARY
 
 main() {
   require_root
+  if [[ "${1:-}" == "--cleanup-failed" && $# -eq 1 ]]; then
+    cleanup_failed_install
+    return
+  fi
+  (( $# == 0 )) || die "不支持的安装参数。"
   load_os
   prompt_values
   preflight_clean_host
+  mark_install_incomplete
   log "安装基础依赖..."
   install_base_packages
   install_caddy
@@ -382,6 +439,7 @@ main() {
   if ! /usr/local/sbin/onekey-recovery create; then
     printf '[!] 首次恢复快照创建失败；服务已完成部署，请检查磁盘空间和数据库后手动执行 onekey-recovery create。\n' >&2
   fi
+  rm -f -- "$INSTALL_MARKER"
   print_summary
 }
 
