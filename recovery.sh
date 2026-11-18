@@ -9,7 +9,13 @@ SNAPSHOT_NAME="snapshot.tar.gz"
 fail() { printf '[x] %s\n' "$*" >&2; exit 1; }
 say() { printf '[+] %s\n' "$*"; }
 need_root() { [[ "$(id -u)" == 0 ]] || fail "请使用 root 运行。"; }
-os_id() { ( . /etc/os-release; printf '%s' "$ID" ); }
+os_id() {
+  (
+    # shellcheck disable=SC1091
+    . /etc/os-release
+    printf '%s' "$ID"
+  )
+}
 
 usage() {
   cat <<'HELP'
@@ -58,7 +64,8 @@ require_source() {
 create_snapshot() {
   need_root
   require_source
-  mkdir -p -m 0700 "$BACKUP_ROOT"
+  mkdir -p -- "$BACKUP_ROOT"
+  chmod 0700 -- "$BACKUP_ROOT"
   local pending final rel
   pending=$(mktemp -d "$BACKUP_ROOT/.pending.XXXXXXXX")
   trap 'rm -rf -- "$pending"' EXIT
@@ -142,7 +149,8 @@ restore_snapshot() {
     [[ "$new_ip" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]] || fail "--new-ip 需要 IPv4 地址。"
     IFS=. read -r a b c d <<< "$new_ip"
     for part in "$a" "$b" "$c" "$d"; do
-      [[ "$part" =~ ^[0-9]+$ ]] && (( 10#$part <= 255 )) || fail "无效 IPv4 地址。"
+      [[ "$part" =~ ^[0-9]+$ ]] || fail "无效 IPv4 地址。"
+      if (( 10#$part > 255 )); then fail "无效 IPv4 地址。"; fi
     done
   fi
   say "恢复预检完成。此操作将恢复原有面板账户、节点密钥和站点配置。"
@@ -153,13 +161,15 @@ restore_snapshot() {
   for svc in x-ui caddy haproxy; do
     ! systemctl is-active --quiet "$svc" || fail "$svc 正在运行，拒绝覆盖服务配置。"
   done
-  command -v caddy >/dev/null && command -v haproxy >/dev/null ||
+  if ! command -v caddy >/dev/null || ! command -v haproxy >/dev/null; then
     fail "需先通过系统软件源安装 Caddy 和 HAProxy。"
+  fi
   [[ -t 0 ]] || fail "恢复需要在交互式终端确认。"
   printf '输入 RESTORE 确认在当前干净 VPS 上写入备份文件：'
   read -r answer
   [[ "$answer" == RESTORE ]] || fail "已取消恢复。"
-  mkdir -p -m 0700 "$BACKUP_ROOT"
+  mkdir -p -- "$BACKUP_ROOT"
+  chmod 0700 -- "$BACKUP_ROOT"
   tmp=$(mktemp -d "$BACKUP_ROOT/.restore.XXXXXXXX")
   trap 'rm -rf -- "$tmp"' EXIT
   tar -xzf "$dir/$SNAPSHOT_NAME" -C "$tmp" --no-same-owner
