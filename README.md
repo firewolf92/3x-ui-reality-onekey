@@ -169,7 +169,7 @@ install -m 0755 /root/onekey-update.new /usr/local/sbin/onekey-update
 ### 新 VPS 恢复（无需原 3x-ui GitHub 仓库）
 
 1. 准备**相同发行版、系统版本及 CPU 架构**的干净 Debian/Ubuntu VPS；把之前保存的整个快照目录（自带 `recovery.sh`）上传到新 VPS。不要先安装 3x-ui。
-2. 确保能使用系统软件源，安装 `caddy`、`haproxy` 等操作系统依赖，例如 `apt-get update && apt-get install -y caddy haproxy`；停止它们的默认服务（`systemctl stop caddy haproxy`），确认没有其他服务占用 80/443。
+2. 确保能使用系统软件源，安装 `caddy`、`haproxy` 等操作系统依赖，例如 `apt-get update && apt-get install -y caddy haproxy python3`；停止它们的默认服务（`systemctl stop caddy haproxy`），确认没有其他服务占用 80/443。
 3. 在新 VPS 上安装本地保存的恢复工具，先验证和预检，再明确确认写入：
 
 ```bash
