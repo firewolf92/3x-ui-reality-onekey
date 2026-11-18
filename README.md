@@ -158,6 +158,8 @@ chmod 0755 /usr/local/sbin/onekey-recovery
 onekey-recovery create
 ```
 
+升级恢复助手后，请重新创建一份最新快照：旧格式快照若没有 `os_version` 元数据，新版恢复/回滚会拒绝自动应用，以防在不兼容系统上误恢复。
+
 **注意**：旧 VPS 如果还使用旧版 `onekey-update`，可以在检查新脚本后下载覆盖，以启用“更新前必须完整备份”：
 
 ```bash
