@@ -223,7 +223,6 @@ with tarfile.open(sys.argv[1], mode="r:gz") as archive:
 PY
   say "SHA256、文件路径和关键文件类型验证通过：$dir"
 }
-}
 
 check_snapshot_host() {
   local dir="$1" saved_os saved_version saved_arch
