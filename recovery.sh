@@ -119,6 +119,12 @@ verify_snapshot() {
   [[ -d "$dir" && ! -L "$dir" ]] || fail "快照目录不存在或是符号链接。"
   [[ -f "$dir/metadata.txt" && -f "$dir/recovery.sh" && -f "$dir/$SNAPSHOT_NAME" && -f "$dir/$SNAPSHOT_NAME.sha256" ]] || fail "快照文件不完整。"
   grep -Fxq 'schema=1' "$dir/metadata.txt" || fail "不支持的快照格式。"
+  [[ $(wc -l < "$dir/$SNAPSHOT_NAME.sha256") -eq 3 ]] || fail "校验清单必须包含 3 个文件。"
+  local manifest_names required
+  manifest_names=$(awk '{print $2}' "$dir/$SNAPSHOT_NAME.sha256")
+  for required in "$SNAPSHOT_NAME" recovery.sh metadata.txt; do
+    grep -Fxq "$required" <<< "$manifest_names" || fail "校验清单缺少：$required"
+  done
   ( cd "$dir"; sha256sum -c --status "$SNAPSHOT_NAME.sha256" ) || fail "SHA256 验证失败；禁止恢复。"
   local names
   names=$(tar -tzf "$dir/$SNAPSHOT_NAME") || fail "快照压缩包损坏。"
