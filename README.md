@@ -65,7 +65,21 @@ bash <(curl -fsSL https://raw.githubusercontent.com/firewolf92/3x-ui-reality-one
 3. ACME 联系邮箱
 4. Reality target / SNI（默认 `www.microsoft.com`）
 
-随后自动完成安装、配置与自检。
+随后自动完成安装、配置与自检。健康检查会为首次 HTTPS 证书签发预留重试时间。首次安装需要通过 SSH 登录；如果系统无法自动识别 SSH 端口，必须显式设置 `ONEKEY_SSH_PORT=实际端口`，**不会再假定 SSH 一定是 22**。
+
+### 安装中断后的安全处理
+
+安装脚本会记录“尚未完成”的状态。如果部署中途失败，**不要直接反复执行安装命令**。优先保存终端日志并排查原因；确认需要放弃这次安装后，再下载当前脚本并在交互式 root 终端中清理：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/firewolf92/3x-ui-reality-onekey/main/install.sh -o /root/onekey-install.sh
+bash -n /root/onekey-install.sh
+bash /root/onekey-install.sh --cleanup-failed
+```
+
+输入 `CLEANUP` 后会为部分安装文件创建本地备份，并停止/清理这次未完成的 3x-ui/Caddy/HAProxy 配置。**这是明确的人为破坏性清理，不是自动回滚**；它不会删除 APT 包或自动重置 UFW。仅当该工具留下了未完成安装标记时才能使用。完整清理后再考虑重新部署。
+
+
 
 ## 无人值守模式
 
@@ -79,7 +93,7 @@ bash <(curl -fsSL https://raw.githubusercontent.com/firewolf92/3x-ui-reality-one
 
 ## 安装后
 
-查看状态：
+查看状态（检查失败时返回非零退出码，适合自动监控）：
 
 ```bash
 onekey-status
@@ -101,6 +115,19 @@ onekey-update
 更新前必须创建**可校验的完整恢复快照**，包括当前面板程序、随包提供的 Xray 程序、SQLite 数据库、面板密钥、站点与反代配置，然后再运行官方更新脚本。如备份失败或官方更新脚本无法下载，更新会安全停止。成功更新后，如本项目仓库暂时无法访问，仍保留本机已安装的管理脚本。
 
 > 已部署过旧版本的 VPS 不要重新运行 install.sh；请先按下面的步骤启用恢复工具。
+
+### 更新失败时人工回滚
+
+更新前命令会打印 `/root/3xui-onekey-backups/recovery-...` 的**确切目录路径**。如果上游更新导致面板或 Xray 无法正常运行，可以使用该目录执行预检与人工回滚：
+
+```bash
+onekey-recovery rollback /root/3xui-onekey-backups/recovery-YYYYMMDD-HHMMSS-PID
+onekey-recovery rollback /root/3xui-onekey-backups/recovery-YYYYMMDD-HHMMSS-PID --apply
+```
+
+第二条必须交互输入 `ROLLBACK` 才会执行。回滚仅恢复 **3x-ui 程序、CLI、SQLite 数据库和 x-ui systemd 服务**，不会修改 Caddy/HAProxy、DNS、UFW；执行前会另存当前残留状态，且不会自动清除旧程序目录。回滚不是事务式自动修复；如果故障涉及操作系统或代理配置，仍可能需要人工处理。
+
+
 
 ## 上游失效保护 / 完整恢复快照
 
@@ -131,6 +158,8 @@ chmod 0755 /usr/local/sbin/onekey-recovery
 onekey-recovery create
 ```
 
+升级恢复助手后，请重新创建一份最新快照：旧格式快照若没有 `os_version` 元数据，新版恢复/回滚会拒绝自动应用，以防在不兼容系统上误恢复。
+
 **注意**：旧 VPS 如果还使用旧版 `onekey-update`，可以在检查新脚本后下载覆盖，以启用“更新前必须完整备份”：
 
 ```bash
@@ -141,8 +170,8 @@ install -m 0755 /root/onekey-update.new /usr/local/sbin/onekey-update
 
 ### 新 VPS 恢复（无需原 3x-ui GitHub 仓库）
 
-1. 准备**相同发行版及 CPU 架构**的干净 Debian/Ubuntu VPS；把之前保存的整个快照目录（自带 `recovery.sh`）上传到新 VPS。不要先安装 3x-ui。
-2. 确保能使用系统软件源，安装 `caddy`、`haproxy` 等操作系统依赖，例如 `apt-get update && apt-get install -y caddy haproxy`；停止它们的默认服务（`systemctl stop caddy haproxy`），确认没有其他服务占用 80/443。
+1. 准备**相同发行版、系统版本及 CPU 架构**的干净 Debian/Ubuntu VPS；把之前保存的整个快照目录（自带 `recovery.sh`）上传到新 VPS。不要先安装 3x-ui。
+2. 确保能使用系统软件源，安装 `caddy`、`haproxy` 等操作系统依赖，例如 `apt-get update && apt-get install -y caddy haproxy python3`；停止它们的默认服务（`systemctl stop caddy haproxy`），确认没有其他服务占用 80/443。
 3. 在新 VPS 上安装本地保存的恢复工具，先验证和预检，再明确确认写入：
 
 ```bash
@@ -167,7 +196,19 @@ onekey-recovery restore /root/recovery-YYYYMMDD-HHMMSS-PID --new-ip 新VPS的公
 onekey-uninstall
 ```
 
-卸载会要求输入 `DELETE` 二次确认，并先备份 3x-ui 数据库。
+卸载会要求输入 `DELETE` 确认；正式删除之前必须成功创建**完整恢复快照**，否则会停止卸载。备份目录和 `onekey-recovery` 工具会保留，方便后续恢复。
+
+## 稳定版验收边界
+
+GitHub Actions 自动执行 Bash 语法、ShellCheck 以及备份完整性、损坏文件、越界符号链接、系统版本不匹配和恢复预检测试。**这些测试不等于真实 VPS 部署通过**，尤其未证明证书申请、REALITY 客户端连接、系统服务恢复或升级回滚都可在每一种服务器环境正常工作。
+
+在打正式稳定标签之前，建议使用可销毁的 Debian/Ubuntu VPS 完成以下验收：
+
+1. 通过全新域名和 VPS 完成安装，核对 `onekey-status` 退出码、网站 HTTPS、面板登录与独立客户端的 REALITY 连接。
+2. 执行 `onekey-recovery create`、`verify`，把备份复制到另一台相同系统版本/架构的测试 VPS，实际完成 `restore --apply` 并验证客户端可用。
+3. 在测试 VPS 上执行 `onekey-update`，使用升级前备份验证 `rollback --apply`；在可丢弃机器上测试失败安装清理和卸载。
+
+未完成上述实机验收前，本仓库应视为**代码检查通过的候选版**，不能宣称生产恢复已验证。
 
 ## 端口设计
 
@@ -185,7 +226,7 @@ onekey-uninstall
 - 普通网站和面板 HTTPS 证书由 Caddy 自动申请和续期。
 - 管理面板真实端口不需要对公网开放。
 - 所有私密参数只在 VPS 本机生成，不写入 GitHub；恢复快照同样不得公开。
-- 首次部署会重置并启用 UFW，只放行当前 SSH 端口、80 和 443；因此仅建议在干净 VPS 上使用。
+- 首次部署会重置并启用 UFW，只放行已确认的 SSH 端口、80 和 443；无法确定 SSH 端口时会拒绝执行，需先设置 `ONEKEY_SSH_PORT`。因此仅建议在干净 VPS 上使用。
 - 本项目不能保证某个 IP 永远不会被识别、限制或封锁；IP 信誉、网络路径、流量行为和服务商策略同样重要。
 
 ## 上游项目

@@ -16,6 +16,13 @@ os_id() {
     printf '%s' "$ID"
   )
 }
+os_version() {
+  (
+    # shellcheck disable=SC1091
+    . /etc/os-release
+    printf '%s' "${VERSION_ID:-unknown}"
+  )
+}
 
 usage() {
   cat <<'HELP'
@@ -23,11 +30,13 @@ usage() {
   onekey-recovery create
   onekey-recovery verify /path/to/recovery-directory
   onekey-recovery restore /path/to/recovery-directory [--new-ip IPv4] [--apply]
+  onekey-recovery rollback /path/to/recovery-directory [--apply]
 
 create  只读备份当前 3x-ui、Xray、配置、SQLite 数据库及代理配置。
 verify  验证快照完整性；不修改系统。
 restore 默认仅预检；加 --apply 后才会在全新、未部署 3x-ui 的服务器恢复。
-恢复要求相同的系统发行版与 CPU 架构，并预装 Caddy/HAProxy。
+rollback 默认仅预检；加 --apply 后才能恢复原服务器上的 3x-ui。
+恢复要求相同的系统发行版、版本与 CPU 架构，并预装 Caddy/HAProxy。
 HELP
 }
 
@@ -99,6 +108,7 @@ PY
   {
     printf 'schema=1\n'
     printf 'os_id=%s\n' "$(os_id)"
+    printf 'os_version=%s\n' "$(os_version)"
     printf 'arch=%s\n' "$(uname -m)"
     printf 'created_utc=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
   } > "$pending/metadata.txt"
@@ -107,7 +117,8 @@ PY
   tar -czf "$pending/$SNAPSHOT_NAME" -C "$pending/files" .
   ( cd "$pending"; sha256sum "$SNAPSHOT_NAME" recovery.sh metadata.txt > "$SNAPSHOT_NAME.sha256" )
   rm -rf -- "$pending/files"
-  final="$BACKUP_ROOT/recovery-$(date -u +%Y%m%d-%H%M%S)-$$"
+  verify_snapshot "$pending" || fail "生成的快照未通过自校验，不会作为可用备份保存。"
+  final="$BACKUP_ROOT/recovery-$(date -u +%Y%m%d-%H%M%S)-$"
   mv -- "$pending" "$final"
   trap - EXIT
   say "快照已保存：$final"
@@ -144,16 +155,90 @@ verify_snapshot() {
     ./usr/bin/x-ui; do
     grep -Fxq "$name" <<< "$names" || fail "快照缺少文件：$name"
   done
-  say "SHA256 和必需文件检查通过：$dir"
+  # SHA256 detects damage, while this independent check rejects path/link
+  # escapes before GNU tar is allowed to extract anything on the host.
+  python3 - "$dir/$SNAPSHOT_NAME" <<'PY'
+import posixpath
+import sys
+import tarfile
+
+allowed = (
+    "etc/3xui-onekey", "etc/x-ui", "etc/default/x-ui",
+    "etc/caddy/Caddyfile", "etc/haproxy/haproxy.cfg",
+    "etc/systemd/system/x-ui.service",
+    "etc/systemd/system/x-ui.service.d",
+    "usr/local/x-ui", "usr/bin/x-ui",
+    "usr/local/sbin/onekey-status", "usr/local/sbin/onekey-update",
+    "usr/local/sbin/onekey-uninstall", "usr/local/sbin/onekey-recovery",
+    "var/www/onekey-site",
+)
+required = {
+    "etc/3xui-onekey/config.env",
+    "etc/x-ui/x-ui.db",
+    "etc/caddy/Caddyfile",
+    "etc/haproxy/haproxy.cfg",
+    "etc/systemd/system/x-ui.service",
+    "usr/local/x-ui/x-ui",
+    "usr/bin/x-ui",
+}
+def allowed_path(path):
+    return any(path == a or path.startswith(a + "/") for a in allowed)
+
+with tarfile.open(sys.argv[1], mode="r:gz") as archive:
+    members = archive.getmembers()
+    regular = set()
+    symlinks = set()
+    for member in members:
+        raw = member.name
+        if raw == "." or raw == "./":
+            if not member.isdir():
+                raise SystemExit("archive root is not directory")
+            continue
+        path = raw[2:] if raw.startswith("./") else raw
+        pieces = path.rstrip("/").split("/")
+        if raw.startswith("/") or not path or any(p in ("", ".", "..") for p in pieces):
+            raise SystemExit(f"unsafe archive member: {raw}")
+        if not allowed_path(path) and not (
+            member.isdir() and any(a.startswith(path + "/") for a in allowed)
+        ):
+            raise SystemExit(f"unexpected archive member: {path}")
+        if not (member.isfile() or member.isdir() or member.issym() or member.islnk()):
+            raise SystemExit(f"unsupported archive member type: {path}")
+        if member.isfile():
+            regular.add(path)
+        if member.issym() or member.islnk():
+            if posixpath.isabs(member.linkname):
+                raise SystemExit(f"absolute link rejected: {path}")
+            origin = posixpath.dirname(path) if member.issym() else ""
+            target = posixpath.normpath(posixpath.join(origin, member.linkname))
+            if target == ".." or target.startswith("../") or not allowed_path(target):
+                raise SystemExit(f"escaping link rejected: {path}")
+            if member.issym():
+                symlinks.add(path)
+    for member in members:
+        path = member.name.removeprefix("./").rstrip("/")
+        if any(path.startswith(link + "/") for link in symlinks):
+            raise SystemExit(f"member beneath symlink rejected: {path}")
+    if not required <= regular:
+        raise SystemExit(f"required regular files missing: {sorted(required - regular)}")
+PY
+  say "SHA256、文件路径和关键文件类型验证通过：$dir"
+}
+
+check_snapshot_host() {
+  local dir="$1" saved_os saved_version saved_arch
+  saved_os=$(sed -n 's/^os_id=//p' "$dir/metadata.txt")
+  saved_version=$(sed -n 's/^os_version=//p' "$dir/metadata.txt")
+  saved_arch=$(sed -n 's/^arch=//p' "$dir/metadata.txt")
+  [[ -n "$saved_version" ]] || fail "旧快照没有系统版本信息；禁止自动恢复，需人工核对。"
+  [[ "$saved_os" == "$(os_id)" && "$saved_version" == "$(os_version)" && "$saved_arch" == "$(uname -m)" ]] ||
+    fail "OS 发行版、版本或 CPU 架构不匹配；拒绝恢复。"
 }
 
 restore_snapshot() {
-  local dir="$1" new_ip="$2" apply="$3" saved_os saved_arch tmp rel answer old_ip
+  local dir="$1" new_ip="$2" apply="$3" tmp rel answer old_ip
   verify_snapshot "$dir"
-  saved_os=$(sed -n 's/^os_id=//p' "$dir/metadata.txt")
-  saved_arch=$(sed -n 's/^arch=//p' "$dir/metadata.txt")
-  [[ "$saved_os" == "$(os_id)" && "$saved_arch" == "$(uname -m)" ]] ||
-    fail "系统或架构不匹配；只支持相同发行版与架构的恢复。"
+  check_snapshot_host "$dir"
   if [[ -n "$new_ip" ]]; then
     [[ "$new_ip" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]] || fail "--new-ip 需要 IPv4 地址。"
     IFS=. read -r a b c d <<< "$new_ip"
@@ -206,11 +291,105 @@ restore_snapshot() {
   trap - EXIT
 }
 
+
+# Roll back the panel only; keep HTTPS, DNS, UFW and HAProxy untouched.
+# This is a deliberate operator action, never an automatic reaction to failure.
+rollback_snapshot() {
+  local dir="$1" apply="$2" tmp guard answer old
+  verify_snapshot "$dir"
+  check_snapshot_host "$dir"
+  [[ -r /etc/3xui-onekey/config.env ]] || fail "当前服务器没有 OneKey 配置，不能原地回滚。"
+  say "回滚将恢复 3x-ui 程序、CLI、SQLite 数据库和 systemd 服务，站点与反代保持不变。"
+  [[ "$apply" == 1 ]] || { say "仅预检；要执行请添加 --apply。"; return 0; }
+  need_root
+  [[ -t 0 ]] || fail "必须在交互式终端确认。"
+  printf '输入 ROLLBACK 以停止 x-ui 并恢复旧程序/数据库：'
+  read -r answer
+  [[ "$answer" == ROLLBACK ]] || fail "已取消回滚。"
+
+  mkdir -p -- "$BACKUP_ROOT"
+  chmod 0700 -- "$BACKUP_ROOT"
+  tmp=$(mktemp -d "$BACKUP_ROOT/.rollback-stage.XXXXXXXX")
+  trap 'rm -rf -- "$tmp"' EXIT
+  tar -xzf "$dir/$SNAPSHOT_NAME" -C "$tmp" --no-same-owner
+  [[ -f "$tmp/etc/x-ui/x-ui.db" && -x "$tmp/usr/local/x-ui/x-ui" ]] ||
+    fail "快照程序或数据库缺失；操作已停止。"
+  python3 - "$tmp/etc/x-ui/x-ui.db" <<'PY'
+import sqlite3
+import sys
+
+db = sqlite3.connect(f"file:{sys.argv[1]}?mode=ro", uri=True)
+try:
+    result = db.execute("PRAGMA integrity_check").fetchone()
+    if result is None or result[0] != "ok":
+        raise RuntimeError("Invalid recovery database")
+finally:
+    db.close()
+PY
+
+  # Copy even a broken current runtime before changing it, so an operator
+  # can recover files omitted by an interrupted upstream updater.
+  guard="$BACKUP_ROOT/pre-rollback-$(date -u +%Y%m%d-%H%M%S)-$"
+  install -d -m 0700 "$guard"
+  local -a saved=()
+  for old in /etc/x-ui /usr/local/x-ui /usr/bin/x-ui \
+             /etc/systemd/system/x-ui.service /etc/systemd/system/x-ui.service.d; do
+    [[ -e "$old" || -L "$old" ]] && saved+=("$old")
+  done
+  if (( ${#saved[@]} > 0 )); then
+    tar -czf "$guard/old-runtime.tar.gz" "${saved[@]}"
+    ( cd "$guard"; sha256sum old-runtime.tar.gz > old-runtime.tar.gz.sha256 )
+  fi
+  say "当前残留状态已备份：$guard"
+
+  systemctl stop x-ui || true
+  old="/usr/local/x-ui.pre-rollback-$"
+  if [[ -e /usr/local/x-ui ]]; then
+    mv -- /usr/local/x-ui "$old"
+  fi
+  if ! cp -a -- "$tmp/usr/local/x-ui" /usr/local/x-ui; then
+    rm -rf -- /usr/local/x-ui
+    if [[ -d "$old" ]]; then mv -- "$old" /usr/local/x-ui; fi
+    fail "程序复制失败，已尝试恢复当前程序目录；残留备份：$guard"
+  fi
+  install -d -m 0700 /etc/x-ui
+  rm -f -- /etc/x-ui/x-ui.db-wal /etc/x-ui/x-ui.db-shm
+  cp -a -- "$tmp/etc/x-ui/x-ui.db" /etc/x-ui/x-ui.db
+  cp -a -- "$tmp/usr/bin/x-ui" /usr/bin/x-ui
+  cp -a -- "$tmp/etc/systemd/system/x-ui.service" /etc/systemd/system/x-ui.service
+  if [[ -d "$tmp/etc/systemd/system/x-ui.service.d" ]]; then
+    mkdir -p /etc/systemd/system/x-ui.service.d
+    cp -a -- "$tmp/etc/systemd/system/x-ui.service.d/." /etc/systemd/system/x-ui.service.d/
+  fi
+  systemctl daemon-reload
+  systemctl enable --now x-ui
+  systemctl is-active --quiet x-ui ||
+    fail "回滚后的 x-ui 未启动。请使用紧急备份排查：$guard"
+  say "x-ui 已恢复快照版本。请手动验证面板及 Reality 节点。"
+  say "紧急备份保留在：$guard"
+  if [[ -d "$old" ]]; then
+    say "原程序目录保留在：$old（确认恢复成功后再手工清理）。"
+  fi
+  rm -rf -- "$tmp"
+  trap - EXIT
+}
+
 main() {
   local action="${1:-}" dir="${2:-}" new_ip="" apply=0
   case "$action" in
     create) [[ $# == 1 ]] || fail "create 不接受参数。"; create_snapshot ;;
     verify) [[ $# == 2 ]] || fail "用法：onekey-recovery verify 目录"; verify_snapshot "$dir" ;;
+    rollback)
+      [[ -n "$dir" ]] || fail "用法：onekey-recovery rollback 目录 [--apply]"
+      shift 2
+      while (( $# > 0 )); do
+        case "$1" in
+          --apply) apply=1; shift ;;
+          *) fail "未知参数：$1" ;;
+        esac
+      done
+      rollback_snapshot "$dir" "$apply"
+      ;;
     restore)
       [[ -n "$dir" ]] || fail "用法：onekey-recovery restore 目录 [--new-ip IPv4] [--apply]"
       shift 2

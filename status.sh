@@ -7,12 +7,14 @@ CLIENT_FILE="/etc/3xui-onekey/client-link.txt"
 # shellcheck disable=SC1090
 . "$STATE_FILE"
 
+failed=0
 check_service() {
   local s="$1"
   if systemctl is-active --quiet "$s"; then
     printf '  %-10s %s\n' "$s" 'RUNNING'
   else
     printf '  %-10s %s\n' "$s" 'DOWN'
+    failed=1
   fi
 }
 
@@ -34,8 +36,14 @@ if curl -fsS --max-time 8 --resolve "${SITE_DOMAIN}:443:127.0.0.1" "https://${SI
 if curl -fsS --max-time 8 --resolve "${PANEL_DOMAIN}:443:127.0.0.1" "https://${PANEL_DOMAIN}${PANEL_BASE}" >/dev/null; then panel=OK; fi
 printf 'HTTPS 网站: %s\n' "$site"
 printf 'HTTPS 面板: %s\n' "$panel"
+if [[ "$site" != OK || "$panel" != OK ]]; then failed=1; fi
 
 if [[ -r "$CLIENT_FILE" ]]; then
   printf '\n客户端链接（root only）:\n'
   cat "$CLIENT_FILE"
+fi
+
+if (( failed != 0 )); then
+  printf '\n[!] 检查发现异常，请确认服务状态、DNS 与 HTTPS 证书。\n' >&2
+  exit 1
 fi
