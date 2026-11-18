@@ -54,6 +54,7 @@ require_source() {
   [[ -s /etc/x-ui/x-ui.db ]] || fail "缺少 SQLite 数据库。PostgreSQL 不支持此恢复格式。"
   [[ -x /usr/local/x-ui/x-ui ]] || fail "缺少已安装的 3x-ui 可执行程序。"
   [[ -r /etc/systemd/system/x-ui.service ]] || fail "缺少 x-ui.service。"
+  [[ -r /usr/local/sbin/onekey-recovery ]] || fail "缺少已安装的恢复助手；无法创建自包含快照。"
   [[ -r /etc/caddy/Caddyfile && -r /etc/haproxy/haproxy.cfg ]] || fail "缺少反向代理配置。"
   command -v python3 >/dev/null || fail "一致性备份需要 python3。"
   if [[ -f /etc/default/x-ui ]] && grep -Eq '^XUI_DB_TYPE=postgres' /etc/default/x-ui; then
@@ -101,8 +102,10 @@ PY
     printf 'arch=%s\n' "$(uname -m)"
     printf 'created_utc=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
   } > "$pending/metadata.txt"
+  cp -a -- /usr/local/sbin/onekey-recovery "$pending/recovery.sh"
+  chmod 0700 "$pending/recovery.sh"
   tar -czf "$pending/$SNAPSHOT_NAME" -C "$pending/files" .
-  ( cd "$pending"; sha256sum "$SNAPSHOT_NAME" > "$SNAPSHOT_NAME.sha256" )
+  ( cd "$pending"; sha256sum "$SNAPSHOT_NAME" recovery.sh metadata.txt > "$SNAPSHOT_NAME.sha256" )
   rm -rf -- "$pending/files"
   final="$BACKUP_ROOT/recovery-$(date -u +%Y%m%d-%H%M%S)-$$"
   mv -- "$pending" "$final"
@@ -114,7 +117,7 @@ PY
 verify_snapshot() {
   local dir="$1" name
   [[ -d "$dir" && ! -L "$dir" ]] || fail "快照目录不存在或是符号链接。"
-  [[ -f "$dir/metadata.txt" && -f "$dir/$SNAPSHOT_NAME" && -f "$dir/$SNAPSHOT_NAME.sha256" ]] || fail "快照文件不完整。"
+  [[ -f "$dir/metadata.txt" && -f "$dir/recovery.sh" && -f "$dir/$SNAPSHOT_NAME" && -f "$dir/$SNAPSHOT_NAME.sha256" ]] || fail "快照文件不完整。"
   grep -Fxq 'schema=1' "$dir/metadata.txt" || fail "不支持的快照格式。"
   ( cd "$dir"; sha256sum -c --status "$SNAPSHOT_NAME.sha256" ) || fail "SHA256 验证失败；禁止恢复。"
   local names
