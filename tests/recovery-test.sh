@@ -15,7 +15,11 @@ printf 'binary\n' > "$tmp/archive/files/usr/local/x-ui/x-ui"
 printf 'script\n' > "$tmp/archive/files/usr/bin/x-ui"
 {
   printf 'schema=1\n'
-  printf 'os_id=%s\n' "$(. /etc/os-release; printf '%s' "$ID")"
+  printf 'os_id=%s\n' "$(
+    # shellcheck disable=SC1091
+    . /etc/os-release
+    printf '%s' "$ID"
+  )"
   printf 'arch=%s\n' "$(uname -m)"
 } > "$tmp/archive/metadata.txt"
 tar -czf "$tmp/archive/snapshot.tar.gz" -C "$tmp/archive/files" .
