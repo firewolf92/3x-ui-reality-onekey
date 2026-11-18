@@ -436,10 +436,10 @@ main() {
   save_state
   install_helpers
   health_check
+  rm -f -- "$INSTALL_MARKER"
   if ! /usr/local/sbin/onekey-recovery create; then
     printf '[!] 首次恢复快照创建失败；服务已完成部署，请检查磁盘空间和数据库后手动执行 onekey-recovery create。\n' >&2
   fi
-  rm -f -- "$INSTALL_MARKER"
   print_summary
 }
 
