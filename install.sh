@@ -467,11 +467,29 @@ EOF_SUMMARY
 # Only resumes the narrow failure window after official 3x-ui installation
 # and before this script has created the Reality inbound or written our state.
 load_existing_panel() {
-  local result_file=/etc/x-ui/install-result.env
+  local stage="${1:-early}" result_file=/etc/x-ui/install-result.env
   [[ -f "$INSTALL_MARKER" && ! -L "$INSTALL_MARKER" ]] ||
     die "没有上次安装未完成标记，拒绝续装。"
-  [[ ! -e "$STATE_FILE" && ! -e "$CLIENT_FILE" && ! -e "$SITE_ROOT" ]] ||
-    die "检测到已经生成的 OneKey 配置或站点；拒绝从早期阶段重复续装。"
+  [[ ! -e "$STATE_FILE" && ! -e "$CLIENT_FILE" ]] ||
+    die "已写入 OneKey 正式部署状态；禁止重复续装。"
+  case "$stage" in
+    early)
+      [[ ! -e "$SITE_ROOT" ]] || die "检测到已创建的站点；不能执行早期续装，请检查 --resume-caddy 适用条件。"
+      ;;
+    caddy)
+      [[ -f "$SITE_ROOT/index.html" && ! -L "$SITE_ROOT" ]] ||
+        die "缺少上次脚本生成的站点文件；拒绝 Caddy 阶段续装。"
+      grep -Fq 'ASTER SYSTEMS' "$SITE_ROOT/index.html" ||
+        die "站点不是 OneKey 默认站点；拒绝覆盖。"
+      [[ -f /etc/caddy/Caddyfile && ! -L /etc/caddy/Caddyfile ]] ||
+        die "缺少上次生成的 Caddyfile，拒绝续装。"
+      [[ ! -e /usr/local/sbin/onekey-status ]] ||
+        die "检测到已安装的 OneKey 助手；不是 Caddy 阶段失败状态。"
+      ! systemctl is-active --quiet haproxy ||
+        die "HAProxy 已运行，拒绝重复配置。"
+      ;;
+    *) die "未知的续装阶段。";;
+  esac
   [[ -f "$result_file" && ! -L "$result_file" && -r "$result_file" ]] ||
     die "缺少官方 root 专用的 3x-ui 安装凭据文件，不能续装。"
   [[ "$(stat -c %u "$result_file")" == 0 ]] ||
@@ -498,8 +516,173 @@ load_existing_panel() {
   [[ -x /usr/local/x-ui/x-ui && -s /etc/x-ui/x-ui.db ]] ||
     die "已安装 3x-ui 程序或 SQLite 数据库缺失，拒绝续装。"
   systemctl is-active --quiet x-ui || die "x-ui 未运行，拒绝续装。"
-  if ss -ltnH | awk '{print $4}' | grep -Eq ':2443$'; then
-    die "Reality 内部端口 2443 已占用；请人工核查，不自动覆盖。"
+  if [[ "$stage" == early ]]; then
+    if ss -ltnH | awk '{print $4}' | grep -Eq ':2443
+}
+
+ensure_reality_port_free_in_panel() {
+  local result
+  result=$(curl -fsS --max-time 10 -b "$COOKIE_FILE" \
+    "$PANEL_LOCAL/panel/api/inbounds/list") ||
+    die "无法检查面板已有入站；拒绝创建重复节点。"
+  jq -e '.success == true and (.obj | type == "array")' <<< "$result" >/dev/null ||
+    die "无法识别已有入站列表；拒绝重复创建节点。"
+  if jq -e --argjson p "$XRAY_INTERNAL_PORT_DEFAULT" \
+     '.obj[] | select((.port | tonumber) == $p)' <<< "$result" >/dev/null; then
+    die "面板中已有 2443 端口入站；拒绝重复创建节点。"
+  fi
+}
+
+resume_failed_install() {
+  require_root
+  load_os
+  # No packages or existing 3x-ui installation are modified during preflight.
+  prompt_values
+  resolve_ssh_port
+  load_existing_panel
+  get_public_ipv4
+  verify_dns "$SITE_DOMAIN"
+  verify_dns "$PANEL_DOMAIN"
+  log "继续未完成的一键部署，不重装 3x-ui..."
+  complete_install 1
+}
+
+complete_install() {
+  local resumed="$1"
+  wait_panel
+  panel_login
+  if [[ "$resumed" == 1 ]]; then ensure_reality_port_free_in_panel; fi
+  create_reality_inbound
+  create_site
+  configure_caddy
+  configure_haproxy
+  configure_firewall
+  save_state
+  install_helpers
+  health_check
+  rm -f -- "$INSTALL_MARKER"
+  if ! /usr/local/sbin/onekey-recovery create; then
+    printf '[!] 首次恢复快照创建失败；服务已完成部署，请检查磁盘空间和数据库后手动执行 onekey-recovery create。\n' >&2
+  fi
+  print_summary
+}
+
+main() {
+  require_root
+  if [[ "${1:-}" == "--cleanup-failed" && $# -eq 1 ]]; then
+    cleanup_failed_install
+    return
+  fi
+  if [[ "${1:-}" == "--resume-failed" && $# -eq 1 ]]; then
+    resume_failed_install
+    return
+  fi
+  (( $# == 0 )) || die "不支持的安装参数。"
+  load_os
+  prompt_values
+  resolve_ssh_port
+  preflight_clean_host
+  mark_install_incomplete
+  log "安装基础依赖..."
+  install_base_packages
+  install_caddy
+  get_public_ipv4
+  log "检测到 VPS IPv4: $PUBLIC_IPV4"
+  verify_dns "$SITE_DOMAIN"
+  verify_dns "$PANEL_DOMAIN"
+  install_3xui
+  complete_install 0
+}
+
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+  main "$@"
+fi
+; then
+      die "Reality 内部端口 2443 已占用；请人工核查，不自动覆盖。"
+    fi
+  else
+    ss -ltnH | awk '{print $4}' | grep -Eq ':2443
+}
+
+ensure_reality_port_free_in_panel() {
+  local result
+  result=$(curl -fsS --max-time 10 -b "$COOKIE_FILE" \
+    "$PANEL_LOCAL/panel/api/inbounds/list") ||
+    die "无法检查面板已有入站；拒绝创建重复节点。"
+  jq -e '.success == true and (.obj | type == "array")' <<< "$result" >/dev/null ||
+    die "无法识别已有入站列表；拒绝重复创建节点。"
+  if jq -e --argjson p "$XRAY_INTERNAL_PORT_DEFAULT" \
+     '.obj[] | select((.port | tonumber) == $p)' <<< "$result" >/dev/null; then
+    die "面板中已有 2443 端口入站；拒绝重复创建节点。"
+  fi
+}
+
+resume_failed_install() {
+  require_root
+  load_os
+  # No packages or existing 3x-ui installation are modified during preflight.
+  prompt_values
+  resolve_ssh_port
+  load_existing_panel
+  get_public_ipv4
+  verify_dns "$SITE_DOMAIN"
+  verify_dns "$PANEL_DOMAIN"
+  log "继续未完成的一键部署，不重装 3x-ui..."
+  complete_install 1
+}
+
+complete_install() {
+  local resumed="$1"
+  wait_panel
+  panel_login
+  if [[ "$resumed" == 1 ]]; then ensure_reality_port_free_in_panel; fi
+  create_reality_inbound
+  create_site
+  configure_caddy
+  configure_haproxy
+  configure_firewall
+  save_state
+  install_helpers
+  health_check
+  rm -f -- "$INSTALL_MARKER"
+  if ! /usr/local/sbin/onekey-recovery create; then
+    printf '[!] 首次恢复快照创建失败；服务已完成部署，请检查磁盘空间和数据库后手动执行 onekey-recovery create。\n' >&2
+  fi
+  print_summary
+}
+
+main() {
+  require_root
+  if [[ "${1:-}" == "--cleanup-failed" && $# -eq 1 ]]; then
+    cleanup_failed_install
+    return
+  fi
+  if [[ "${1:-}" == "--resume-failed" && $# -eq 1 ]]; then
+    resume_failed_install
+    return
+  fi
+  (( $# == 0 )) || die "不支持的安装参数。"
+  load_os
+  prompt_values
+  resolve_ssh_port
+  preflight_clean_host
+  mark_install_incomplete
+  log "安装基础依赖..."
+  install_base_packages
+  install_caddy
+  get_public_ipv4
+  log "检测到 VPS IPv4: $PUBLIC_IPV4"
+  verify_dns "$SITE_DOMAIN"
+  verify_dns "$PANEL_DOMAIN"
+  install_3xui
+  complete_install 0
+}
+
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+  main "$@"
+fi
+ ||
+      die "Reality 端口 2443 未监听；不能确认已经创建的入站。"
   fi
   log "已确认可续装的 3x-ui 实例；将复用原有账号、端口及面板路径。"
 }
