@@ -98,7 +98,68 @@ cat /etc/3xui-onekey/client-link.txt
 onekey-update
 ```
 
-更新前会自动备份 3x-ui 数据库和反代配置，然后调用 3x-ui 官方稳定版更新脚本。
+更新前必须创建**可校验的完整恢复快照**，包括当前面板程序、随包提供的 Xray 程序、SQLite 数据库、面板密钥、站点与反代配置，然后再运行官方更新脚本。如备份失败或官方更新脚本无法下载，更新会安全停止。成功更新后，如本项目仓库暂时无法访问，仍保留本机已安装的管理脚本。
+
+> 已部署过旧版本的 VPS 不要重新运行 install.sh；请先按下面的步骤启用恢复工具。
+
+## 上游失效保护 / 完整恢复快照
+
+**新增**：onekey-recovery 工具。它把已安装的 3x-ui 程序（包括目录内的 Xray）、面板数据、反代配置、站点及辅助命令备份到本机私有目录，并生成 SHA256 校验文件。即使 3x-ui 官方 GitHub 仓库删除，只要你在删除前将快照转存到其他设备，就仍有机会用原来的运行文件恢复。
+
+### 新部署后立即备份
+
+新部署健康检查通过后，会**自动尝试创建第一份恢复快照**；如果创建失败，会显示警告但不会中断已经运行的服务。建议再手动执行一次确认：
+
+```bash
+onekey-recovery create
+```
+
+输出一个类似 `/root/3xui-onekey-backups/recovery-20261118-120000-1234` 的目录。备份目录内同时包含 **recovery.sh 恢复脚本副本**、元数据和校验文件；必须把**整个目录**安全复制到其他服务器或本地电脑。即使 GitHub 仓库以后被删除，也可以直接使用这份恢复脚本。
+
+```bash
+onekey-recovery verify /root/3xui-onekey-backups/recovery-YYYYMMDD-HHMMSS-PID
+```
+
+### 已部署旧版 VPS：只启用恢复工具，不重装
+
+在已安装本项目的 VPS 上以 root 执行：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/firewolf92/3x-ui-reality-onekey/main/recovery.sh -o /usr/local/sbin/onekey-recovery
+bash -n /usr/local/sbin/onekey-recovery
+chmod 0755 /usr/local/sbin/onekey-recovery
+onekey-recovery create
+```
+
+**注意**：旧 VPS 如果还使用旧版 `onekey-update`，可以在检查新脚本后下载覆盖，以启用“更新前必须完整备份”：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/firewolf92/3x-ui-reality-onekey/main/update.sh -o /root/onekey-update.new
+bash -n /root/onekey-update.new
+install -m 0755 /root/onekey-update.new /usr/local/sbin/onekey-update
+```
+
+### 新 VPS 恢复（无需原 3x-ui GitHub 仓库）
+
+1. 准备**相同发行版及 CPU 架构**的干净 Debian/Ubuntu VPS；把之前保存的整个快照目录（自带 `recovery.sh`）上传到新 VPS。不要先安装 3x-ui。
+2. 确保能使用系统软件源，安装 `caddy`、`haproxy` 等操作系统依赖，例如 `apt-get update && apt-get install -y caddy haproxy`；停止它们的默认服务（`systemctl stop caddy haproxy`），确认没有其他服务占用 80/443。
+3. 在新 VPS 上安装本地保存的恢复工具，先验证和预检，再明确确认写入：
+
+```bash
+install -m 0755 /root/recovery-YYYYMMDD-HHMMSS-PID/recovery.sh /usr/local/sbin/onekey-recovery
+onekey-recovery verify /root/recovery-YYYYMMDD-HHMMSS-PID
+onekey-recovery restore /root/recovery-YYYYMMDD-HHMMSS-PID --new-ip 新VPS的公网IPv4
+onekey-recovery restore /root/recovery-YYYYMMDD-HHMMSS-PID --new-ip 新VPS的公网IPv4 --apply
+```
+
+最后一步会要求在交互式终端输入 `RESTORE`。恢复脚本**拒绝覆盖已有 3x-ui 安装或正在运行的服务**，并且**不会自动修改 UFW 防火墙、DNS 或 SSH 端口**。恢复前应将域名 A 记录指向新 VPS；恢复后检查 `onekey-status`、HTTPS 证书、Reality 客户端及防火墙规则。
+
+### 边界与安全
+
+- 快照里有面板用户名、密码、UUID、REALITY 私钥以及可能存在的其他机密。**不要上传到公开 GitHub 仓库**，备份目录默认只有 root 可访问；请使用加密的离机存储。
+- SHA256 用来检测意外损坏；它不是数字签名，不能证明第三方备份可信。只恢复自己创建、妥善保管的快照。
+- 此能力避免了恢复时重新从原 3x-ui GitHub 仓库下载程序，但**不是完全断网安装**：新 VPS 仍需要发行版的软件包依赖、有效域名及 HTTPS 证书续期。不会自动镜像 GitHub Releases 到你的仓库。
+- 当前仅支持本项目默认的 **SQLite** 部署；PostgreSQL 必须单独备份。新 VPS 的实际恢复效果需要在测试机验收，不能仅凭脚本静态检查视为生产可恢复。
 
 ## 卸载
 
@@ -123,7 +184,7 @@ onekey-uninstall
 - REALITY 入站本身不需要服务器自己的 TLS 证书。
 - 普通网站和面板 HTTPS 证书由 Caddy 自动申请和续期。
 - 管理面板真实端口不需要对公网开放。
-- 所有私密参数只在 VPS 本机生成，不写入 GitHub。
+- 所有私密参数只在 VPS 本机生成，不写入 GitHub；恢复快照同样不得公开。
 - 首次部署会重置并启用 UFW，只放行当前 SSH 端口、80 和 443；因此仅建议在干净 VPS 上使用。
 - 本项目不能保证某个 IP 永远不会被识别、限制或封锁；IP 信誉、网络路径、流量行为和服务商策略同样重要。
 

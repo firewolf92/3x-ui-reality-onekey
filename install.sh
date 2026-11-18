@@ -84,7 +84,7 @@ preflight_clean_host() {
 install_base_packages() {
   export DEBIAN_FRONTEND=noninteractive
   apt-get update -y
-  apt-get install -y ca-certificates curl jq openssl iproute2 dnsutils ufw haproxy debian-keyring debian-archive-keyring apt-transport-https
+  apt-get install -y ca-certificates curl jq openssl iproute2 dnsutils ufw haproxy python3 debian-keyring debian-archive-keyring apt-transport-https
   systemctl stop haproxy 2>/dev/null || true
 }
 
@@ -313,7 +313,8 @@ install_helpers() {
   curl -fsSL https://raw.githubusercontent.com/firewolf92/3x-ui-reality-onekey/main/status.sh -o /usr/local/sbin/onekey-status
   curl -fsSL https://raw.githubusercontent.com/firewolf92/3x-ui-reality-onekey/main/update.sh -o /usr/local/sbin/onekey-update
   curl -fsSL https://raw.githubusercontent.com/firewolf92/3x-ui-reality-onekey/main/uninstall.sh -o /usr/local/sbin/onekey-uninstall
-  chmod 0755 /usr/local/sbin/onekey-status /usr/local/sbin/onekey-update /usr/local/sbin/onekey-uninstall
+  curl -fsSL https://raw.githubusercontent.com/firewolf92/3x-ui-reality-onekey/main/recovery.sh -o /usr/local/sbin/onekey-recovery
+  chmod 0755 /usr/local/sbin/onekey-status /usr/local/sbin/onekey-update /usr/local/sbin/onekey-uninstall /usr/local/sbin/onekey-recovery
 }
 
 health_check() {
@@ -378,6 +379,9 @@ main() {
   save_state
   install_helpers
   health_check
+  if ! /usr/local/sbin/onekey-recovery create; then
+    printf '[!] 首次恢复快照创建失败；服务已完成部署，请检查磁盘空间和数据库后手动执行 onekey-recovery create。\n' >&2
+  fi
   print_summary
 }
 
