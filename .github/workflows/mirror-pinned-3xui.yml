@@ -1,0 +1,48 @@
+name: mirror-pinned-3xui
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/mirror-pinned-3xui.yml
+      - scripts/build-3xui-mirror.sh
+      - scripts/patch-3xui-installer.py
+      - vendor/3x-ui/**
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  mirror:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build pinned GPL release with official SHA256 checks
+        run: bash scripts/build-3xui-mirror.sh dist/vendor-3xui
+      - name: Publish to owned repository (never overwrite an existing mirror tag)
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -Eeuo pipefail
+          tag="mirror-3xui-v3.11.0"
+          if gh release view "$tag" >/dev/null 2>&1; then
+            echo "Immutable mirror release $tag already exists; refusing to replace assets."
+            # Verify required assets exist. If incomplete, fail loudly for manual repair.
+            gh release view "$tag" --json assets --jq '.assets[].name' > /tmp/mirror-assets.txt
+            for file in install.sh manifest.sha256 x-ui.sh x-ui-linux-amd64.tar.gz x-ui-linux-arm64.tar.gz x-ui-linux-amd64.tar.gz.sha256 x-ui-linux-arm64.tar.gz.sha256 x-ui.service.debian 3x-ui-source-v3.11.0.tar.gz LICENSE; do
+              grep -Fxq "$file" /tmp/mirror-assets.txt || { echo "Incomplete existing mirror: $file" >&2; exit 1; }
+            done
+            exit 0
+          fi
+          gh release create "$tag" dist/vendor-3xui/* \
+            --target "${GITHUB_SHA}" \
+            --title "Pinned 3x-ui v3.11.0 mirror (GPL-3.0)" \
+            --notes "Unmodified official v3.11.0 release archives (amd64 and arm64) verified against upstream SHA256 sidecars; complete upstream source archive and LICENSE; pinned patched installer whose download URLs point only to this release. No private configurations or node credentials. See vendor/3x-ui/README.md. This mirror is not an independent security update feed." \
+            --latest=false
+          gh release view "$tag" --json assets --jq '.assets[].name' > /tmp/mirror-assets.txt
+          for file in install.sh manifest.sha256 x-ui-linux-amd64.tar.gz x-ui-linux-arm64.tar.gz 3x-ui-source-v3.11.0.tar.gz; do
+            grep -Fxq "$file" /tmp/mirror-assets.txt || { echo "Uploaded mirror missing $file" >&2; exit 1; }
+          done
