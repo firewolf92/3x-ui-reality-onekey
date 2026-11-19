@@ -436,18 +436,28 @@ health_check() {
   ss -ltnH | awk '{print $4}' | grep -Eq '(:|\])443$' || die "健康检查失败: 公网 443 未监听。"
   ss -ltnH | awk '{print $4}' | grep -Eq "(:|\\])${XRAY_INTERNAL_PORT}$" || die "健康检查失败: Xray 内部端口未监听。"
   ss -ltnH | awk '{print $4}' | grep -Eq "(:|\\])${CADDY_TLS_PORT}$" || die "健康检查失败: Caddy 内部 TLS 端口未监听。"
-  local ok=0
-  for _ in $(seq 1 60); do
-    if curl -fsS --max-time 5 --resolve "${SITE_DOMAIN}:443:127.0.0.1" "https://${SITE_DOMAIN}/" >/dev/null 2>&1 &&
-      curl -fsS --max-time 5 --resolve "${PANEL_DOMAIN}:443:127.0.0.1" "https://${PANEL_DOMAIN}${PANEL_BASE}" >/dev/null 2>&1; then
+  local ok=0 deadline=$((SECONDS + 180)) attempts=0 site_result panel_result
+  while (( SECONDS < deadline )); do
+    if curl --noproxy '*' -fsS --max-time 6 --resolve "${SITE_DOMAIN}:443:127.0.0.1" "https://${SITE_DOMAIN}/" >/dev/null 2>&1 &&
+      curl --noproxy '*' -fsS --max-time 6 --resolve "${PANEL_DOMAIN}:443:127.0.0.1" "https://${PANEL_DOMAIN}${PANEL_BASE}" >/dev/null 2>&1; then
       ok=1
       break
     fi
+    (( attempts += 1 ))
+    if (( attempts % 10 == 0 )); then log "等待网站与面板 HTTPS 就绪（证书签发可能需要一些时间）..."; fi
     sleep 2
   done
   if [[ "$ok" != 1 ]]; then
-    journalctl -u caddy -n 60 --no-pager >&2 || true
-    die "健康检查失败: 120 秒内 HTTPS 网站或面板未通过检查，请排查 DNS、ACME 证书和 Caddy。"
+    site_result=$(curl --noproxy '*' -sS --max-time 6 \
+      --resolve "${SITE_DOMAIN}:443:127.0.0.1" -o /dev/null \
+      -w 'HTTP=%{http_code} TLS=%{ssl_verify_result}' "https://${SITE_DOMAIN}/" 2>&1 || true)
+    panel_result=$(curl --noproxy '*' -sS --max-time 6 \
+      --resolve "${PANEL_DOMAIN}:443:127.0.0.1" -o /dev/null \
+      -w 'HTTP=%{http_code} TLS=%{ssl_verify_result}' "https://${PANEL_DOMAIN}${PANEL_BASE}" 2>&1 || true)
+    printf '[x] 健康检查诊断：网站 %s；面板 %s\n' "$site_result" "$panel_result" >&2
+    journalctl -u caddy -n 40 --no-pager >&2 || true
+    journalctl -u haproxy -n 20 --no-pager >&2 || true
+    die "健康检查失败: 等待约 180 秒仍未通过；请根据以上 HTTP/TLS 状态检查站点权限、HAProxy 和证书。"
   fi
 }
 
