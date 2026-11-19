@@ -25,11 +25,14 @@ jobs:
           bash -n tests/panel-auth-test.sh
           bash -n resume-caddy.sh
           bash -n tests/caddy-resume-test.sh
+          bash -n tests/site-permissions-test.sh
       - name: ShellCheck
-        run: shellcheck install.sh status.sh update.sh uninstall.sh recovery.sh resume-caddy.sh tests/recovery-test.sh tests/panel-auth-test.sh tests/caddy-resume-test.sh
+        run: shellcheck install.sh status.sh update.sh uninstall.sh recovery.sh resume-caddy.sh tests/recovery-test.sh tests/panel-auth-test.sh tests/caddy-resume-test.sh tests/site-permissions-test.sh
       - name: Recovery safety tests
         run: bash tests/recovery-test.sh
       - name: 3x-ui CSRF login and inbound integration
         run: bash tests/panel-auth-test.sh
       - name: Caddyfile parsing and guarded recovery
         run: bash tests/caddy-resume-test.sh
+      - name: Caddy public site file permissions
+        run: bash tests/site-permissions-test.sh

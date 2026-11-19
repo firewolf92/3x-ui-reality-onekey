@@ -150,6 +150,21 @@ REALITY_SNI=www.microsoft.com \
 bash <(curl -fsSL https://raw.githubusercontent.com/firewolf92/3x-ui-reality-onekey/main/install.sh)
 ```
 
+### 网站 HTTPS 返回 403，但面板正常
+
+如果安装脚本已经运行到最后的健康检查，提示网站 HTTP 403、面板 HTTP 200，且 Caddy 的 HTTPS 证书已签发，通常是旧版 `install.sh` 在 `umask 077` 下生成的公开静态文件不可被 Caddy 用户读取。请勿重装节点或重新执行 `--resume-caddy --apply`。
+
+在原 VPS 以 root 执行：
+
+```bash
+stat -c '%a %U:%G %n' /var/www/onekey-site /var/www/onekey-site/index.html /var/www/onekey-site/robots.txt
+chmod 0644 /var/www/onekey-site/index.html /var/www/onekey-site/robots.txt
+curl --noproxy '*' -fsS --resolve 'example.com:443:127.0.0.1' https://example.com/ -o /dev/null
+onekey-status
+```
+
+把 `example.com` 替换成自己的正常网站域名。**只有**确认两个 HTTPS 检查、三个服务均正常后，再执行 `onekey-recovery create` 保存完整快照；若创建成功，最后删除 `/etc/3xui-onekey/.installation-incomplete` 未完成标记。这两项应由管理员单独验收，不能用重跑完整安装代替。不要公开分享包含密码和 Reality 密钥的状态输出。
+
 ## 安装后
 
 查看状态（检查失败时返回非零退出码，适合自动监控）：
