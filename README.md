@@ -50,6 +50,24 @@ panel.example.com  -> VPS IPv4
 
 如果 DNS 使用 Cloudflare，首次部署请设置为 **DNS only（灰云）**。
 
+## 新 VPS 安装前检查（可选，但推荐）
+
+当前版本已把**公网 IPv4 和两个域名的 DNS 解析检查前移到 APT 安装前**。如果忘记修改 A 记录、仍启用 Cloudflare 橙云，脚本会提前停止，**不会先安装 Caddy/HAProxy 或留下未完成安装标记**。
+
+如需在正式安装前单独检查一次，可在干净 Debian/Ubuntu VPS 上用 root 运行：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/firewolf92/3x-ui-reality-onekey/main/install.sh -o /root/onekey-install.sh
+bash -n /root/onekey-install.sh
+bash /root/onekey-install.sh --preflight
+```
+
+输入正式使用的网站域名、面板域名、证书邮箱和 Reality SNI。该模式**只读取环境信息，不安装软件、不修改配置**，会检查操作系统、已存在的反代/面板和 80/443 端口、SSH 端口、公网 IPv4 以及两个域名的解析。
+
+正式一键安装也会自动执行相同的前置检查，并在安装 dnsutils 后用 `dig` 再复核一次 DNS。必须让两个域名的 A 记录直接指向该 VPS（Cloudflare 首次安装用灰云），并且确保 VPS 防火墙及服务商安全组允许 SSH 和 TCP 80/443。
+
+预检通过**不等于**软件源、GitHub 下载、ACME 证书签发或后续 Reality 客户端连接一定成功；这些涉及外部网络和软件版本，仍需在安装后验收。
+
 ## 安装
 
 SSH 登录 VPS 后，以 root 执行：
@@ -65,7 +83,7 @@ bash <(curl -fsSL https://raw.githubusercontent.com/firewolf92/3x-ui-reality-one
 3. ACME 联系邮箱
 4. Reality target / SNI（默认 `www.microsoft.com`）
 
-随后自动完成安装、配置与自检。健康检查会为首次 HTTPS 证书签发预留重试时间。首次安装需要通过 SSH 登录；如果系统无法自动识别 SSH 端口，必须显式设置 `ONEKEY_SSH_PORT=实际端口`，**不会再假定 SSH 一定是 22**。
+随后自动完成安装、配置与自检。健康检查会为首次 HTTPS 证书签发预留约 180 秒的等待时间；失败时额外输出网站/面板 HTTP 状态与 TLS 校验结果，帮助定位问题，而不只是报告超时。首次安装需要通过 SSH 登录；如果系统无法自动识别 SSH 端口，必须显式设置 `ONEKEY_SSH_PORT=实际端口`，**不会再假定 SSH 一定是 22**。
 
 ### 3x-ui 安装成功但一键脚本自动配置失败：安全续装
 
