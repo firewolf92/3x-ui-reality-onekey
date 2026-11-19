@@ -260,6 +260,9 @@ create_site() {
 <script>document.getElementById('y').textContent=new Date().getFullYear()</script></body></html>
 HTML
   printf 'User-agent: *\nAllow: /\n' > "$SITE_ROOT/robots.txt"
+  # The installer runs with umask 077. Caddy runs as a different user and
+  # needs world-readable permissions for these intentionally public files.
+  chmod 0644 "$SITE_ROOT/index.html" "$SITE_ROOT/robots.txt"
 }
 
 render_caddyfile() {
