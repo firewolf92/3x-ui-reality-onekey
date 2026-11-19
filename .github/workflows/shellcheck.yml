@@ -44,3 +44,14 @@ jobs:
         run: bash tests/fresh-preflight-test.sh
       - name: Pinned 3x-ui fallback and checksums
         run: bash tests/vendor-mirror-test.sh
+      - name: Patch exact upstream v3.11.0 installer in CI
+        run: |
+          set -Eeuo pipefail
+          curl -fLSs --retry 3 --max-time 60 \
+            https://raw.githubusercontent.com/MHSanaei/3x-ui/v3.11.0/install.sh -o /tmp/upstream-xui-install.sh
+          python3 scripts/patch-3xui-installer.py /tmp/upstream-xui-install.sh /tmp/selfhosted-xui-install.sh
+          bash -n /tmp/selfhosted-xui-install.sh
+          if grep -E 'github.com/MHSanaei/3x-ui|raw.githubusercontent.com/MHSanaei/3x-ui' /tmp/selfhosted-xui-install.sh; then
+            echo "Installer still fetches the original upstream repo" >&2
+            exit 1
+          fi
