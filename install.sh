@@ -155,6 +155,19 @@ get_public_ipv4() {
   [[ "$PUBLIC_IPV4" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]] || die "无法获取 VPS 公网 IPv4。"
 }
 
+# Read-only DNS validation before APT. getent is on stock Debian/Ubuntu.
+preflight_dns() {
+  local domain="$1" ips
+  if command -v getent >/dev/null 2>&1; then
+    ips=$(getent ahostsv4 "$domain" 2>/dev/null | awk '{print $1}' | sort -u || true)
+  elif command -v dig >/dev/null 2>&1; then
+    ips=$(dig +short A "$domain" | tr -d '\r' | grep -E '^([0-9]{1,3}\.){3}[0-9]{1,3}$' || true)
+  else
+    die "缺少 getent/dig，无法进行无修改的 DNS 预检。"
+  fi
+  grep -Fxq "$PUBLIC_IPV4" <<< "$ips" ||
+    die "$domain 没有解析到 VPS IPv4 $PUBLIC_IPV4。请先设置正确的 DNS A 记录，Cloudflare 首次部署使用灰云；尚未安装软件或写入配置。"
+}
 verify_dns() {
   local domain="$1" ips
   ips=$(dig +short A "$domain" | tr -d '\r' | grep -E '^([0-9]{1,3}\.){3}[0-9]{1,3}$' || true)
@@ -423,18 +436,28 @@ health_check() {
   ss -ltnH | awk '{print $4}' | grep -Eq '(:|\])443$' || die "健康检查失败: 公网 443 未监听。"
   ss -ltnH | awk '{print $4}' | grep -Eq "(:|\\])${XRAY_INTERNAL_PORT}$" || die "健康检查失败: Xray 内部端口未监听。"
   ss -ltnH | awk '{print $4}' | grep -Eq "(:|\\])${CADDY_TLS_PORT}$" || die "健康检查失败: Caddy 内部 TLS 端口未监听。"
-  local ok=0
-  for _ in $(seq 1 60); do
-    if curl -fsS --max-time 5 --resolve "${SITE_DOMAIN}:443:127.0.0.1" "https://${SITE_DOMAIN}/" >/dev/null 2>&1 &&
-      curl -fsS --max-time 5 --resolve "${PANEL_DOMAIN}:443:127.0.0.1" "https://${PANEL_DOMAIN}${PANEL_BASE}" >/dev/null 2>&1; then
+  local ok=0 deadline=$((SECONDS + 180)) attempts=0 site_result panel_result
+  while (( SECONDS < deadline )); do
+    if curl --noproxy '*' -fsS --max-time 6 --resolve "${SITE_DOMAIN}:443:127.0.0.1" "https://${SITE_DOMAIN}/" >/dev/null 2>&1 &&
+      curl --noproxy '*' -fsS --max-time 6 --resolve "${PANEL_DOMAIN}:443:127.0.0.1" "https://${PANEL_DOMAIN}${PANEL_BASE}" >/dev/null 2>&1; then
       ok=1
       break
     fi
+    (( attempts += 1 ))
+    if (( attempts % 10 == 0 )); then log "等待网站与面板 HTTPS 就绪（证书签发可能需要一些时间）..."; fi
     sleep 2
   done
   if [[ "$ok" != 1 ]]; then
-    journalctl -u caddy -n 60 --no-pager >&2 || true
-    die "健康检查失败: 120 秒内 HTTPS 网站或面板未通过检查，请排查 DNS、ACME 证书和 Caddy。"
+    site_result=$(curl --noproxy '*' -sS --max-time 6 \
+      --resolve "${SITE_DOMAIN}:443:127.0.0.1" -o /dev/null \
+      -w 'HTTP=%{http_code} TLS=%{ssl_verify_result}' "https://${SITE_DOMAIN}/" 2>&1 || true)
+    panel_result=$(curl --noproxy '*' -sS --max-time 6 \
+      --resolve "${PANEL_DOMAIN}:443:127.0.0.1" -o /dev/null \
+      -w 'HTTP=%{http_code} TLS=%{ssl_verify_result}' "https://${PANEL_DOMAIN}${PANEL_BASE}" 2>&1 || true)
+    printf '[x] 健康检查诊断：网站 %s；面板 %s\n' "$site_result" "$panel_result" >&2
+    journalctl -u caddy -n 40 --no-pager >&2 || true
+    journalctl -u haproxy -n 20 --no-pager >&2 || true
+    die "健康检查失败: 等待约 180 秒仍未通过；请根据以上 HTTP/TLS 状态检查站点权限、HAProxy 和证书。"
   fi
 }
 
@@ -564,17 +587,29 @@ main() {
     resume_failed_install
     return
   fi
-  (( $# == 0 )) || die "不支持的安装参数。"
+  local preflight_only=0
+  if [[ "${1:-}" == "--preflight" && $# -eq 1 ]]; then
+    preflight_only=1
+  elif (( $# != 0 )); then
+    die "不支持的安装参数。"
+  fi
   load_os
   prompt_values
   resolve_ssh_port
   preflight_clean_host
+  get_public_ipv4
+  log "检测到 VPS IPv4: $PUBLIC_IPV4"
+  preflight_dns "$SITE_DOMAIN"
+  preflight_dns "$PANEL_DOMAIN"
+  if (( preflight_only == 1 )); then
+    log "新 VPS 预检通过（DNS、SSH 端口及已有服务检查）；没有修改系统。"
+    return
+  fi
   mark_install_incomplete
   log "安装基础依赖..."
   install_base_packages
   install_caddy
-  get_public_ipv4
-  log "检测到 VPS IPv4: $PUBLIC_IPV4"
+  # Reconfirm public DNS A records with dig once dnsutils is installed.
   verify_dns "$SITE_DOMAIN"
   verify_dns "$PANEL_DOMAIN"
   install_3xui

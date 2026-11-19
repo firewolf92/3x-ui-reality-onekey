@@ -32,8 +32,8 @@ printf '%s\n' '----------------------------------------'
 
 site=FAIL
 panel=FAIL
-if curl -fsS --max-time 8 --resolve "${SITE_DOMAIN}:443:127.0.0.1" "https://${SITE_DOMAIN}/" >/dev/null; then site=OK; fi
-if curl -fsS --max-time 8 --resolve "${PANEL_DOMAIN}:443:127.0.0.1" "https://${PANEL_DOMAIN}${PANEL_BASE}" >/dev/null; then panel=OK; fi
+if curl --noproxy '*' -fsS --max-time 8 --resolve "${SITE_DOMAIN}:443:127.0.0.1" "https://${SITE_DOMAIN}/" >/dev/null; then site=OK; fi
+if curl --noproxy '*' -fsS --max-time 8 --resolve "${PANEL_DOMAIN}:443:127.0.0.1" "https://${PANEL_DOMAIN}${PANEL_BASE}" >/dev/null; then panel=OK; fi
 printf 'HTTPS 网站: %s\n' "$site"
 printf 'HTTPS 面板: %s\n' "$panel"
 if [[ "$site" != OK || "$panel" != OK ]]; then failed=1; fi
