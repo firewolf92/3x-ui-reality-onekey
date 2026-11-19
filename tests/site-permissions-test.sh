@@ -6,7 +6,7 @@ tmp=$(mktemp -d)
 trap 'rm -rf -- "$tmp"' EXIT
 
 # Sourcing the installer does not run its guarded main() entry point.
-# shellcheck source=../install.sh
+# shellcheck disable=SC1091
 . "$root/install.sh"
 SITE_ROOT="$tmp/public-site"
 create_site
