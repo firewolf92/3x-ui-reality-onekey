@@ -12,6 +12,11 @@ XRAY_INTERNAL_PORT_DEFAULT="2443"
 CADDY_TLS_PORT_DEFAULT="8443"
 REALITY_SNI_DEFAULT="www.microsoft.com"
 REALITY_PORT="443"
+# Pinned upstream release: vendor mirror archives are tied to these exact assets.
+XUI_PINNED_TAG="v3.11.0"
+XUI_MIRROR_TAG="mirror-3xui-v3.11.0"
+XUI_MIRROR_BASE="https://github.com/firewolf92/3x-ui-reality-onekey/releases/download/${XUI_MIRROR_TAG}"
+XUI_UPSTREAM_BASE="https://github.com/MHSanaei/3x-ui/releases/download/${XUI_PINNED_TAG}"
 
 log() { printf '\033[1;32m[+]\033[0m %s\n' "$*"; }
 die() { printf '\033[1;31m[x]\033[0m %s\n' "$*" >&2; exit 1; }
@@ -174,15 +179,113 @@ verify_dns() {
   grep -Fxq "$PUBLIC_IPV4" <<<"$ips" || die "$domain 当前没有直接解析到 $PUBLIC_IPV4。请检查 A 记录；Cloudflare 首次部署请使用 DNS only（灰云）。"
 }
 
+# Download availability check only. Never install by probing a URL.
+url_reachable() {
+  curl -fsSLI --retry 1 --connect-timeout 8 --max-time 25 "$1" >/dev/null 2>&1
+}
+
+xui_arch() {
+  case "$(uname -m)" in
+    x86_64|amd64) printf 'amd64' ;;
+    aarch64|arm64) printf 'arm64' ;;
+    *) die "内置 3x-ui 版本镜像目前仅支持 amd64/arm64；检测到 $(uname -m)。" ;;
+  esac
+}
+
+probe_3xui_upstream() {
+  local arch="$1"
+  url_reachable "https://raw.githubusercontent.com/MHSanaei/3x-ui/${XUI_PINNED_TAG}/install.sh" &&
+    url_reachable "https://raw.githubusercontent.com/MHSanaei/3x-ui/${XUI_PINNED_TAG}/x-ui.sh" &&
+    url_reachable "${XUI_UPSTREAM_BASE}/x-ui-linux-${arch}.tar.gz" &&
+    url_reachable "${XUI_UPSTREAM_BASE}/x-ui-linux-${arch}.tar.gz.sha256"
+}
+
+probe_3xui_mirror() {
+  local arch="$1"
+  url_reachable "${XUI_MIRROR_BASE}/manifest.sha256" &&
+    url_reachable "${XUI_MIRROR_BASE}/install.sh" &&
+    url_reachable "${XUI_MIRROR_BASE}/x-ui.sh" &&
+    url_reachable "${XUI_MIRROR_BASE}/x-ui.service.debian" &&
+    url_reachable "${XUI_MIRROR_BASE}/x-ui-linux-${arch}.tar.gz" &&
+    url_reachable "${XUI_MIRROR_BASE}/x-ui-linux-${arch}.tar.gz.sha256"
+}
+
+choose_3xui_source() {
+  local arch="$1" preference="${ONEKEY_3XUI_SOURCE:-auto}"
+  case "$preference" in
+    auto)
+      if probe_3xui_upstream "$arch"; then printf 'upstream'; return; fi
+      if probe_3xui_mirror "$arch"; then printf 'mirror'; return; fi
+      die "官方 3x-ui 和自有固定版本镜像均不可访问；拒绝开始安装 3x-ui。请检查网络及自有 Release 是否完整。"
+      ;;
+    upstream)
+      probe_3xui_upstream "$arch" ||
+        die "强制官方源，但 v3.11.0 的安装资源不可用；不自动改用镜像。"
+      printf 'upstream'
+      ;;
+    mirror)
+      probe_3xui_mirror "$arch" ||
+        die "强制自有镜像，但 Release 中缺少必要资源或当前网络不可访问。"
+      printf 'mirror'
+      ;;
+    *) die "ONEKEY_3XUI_SOURCE 仅支持 auto、upstream、mirror。" ;;
+  esac
+}
+
+# Mirror manifest is checksummed against an installer retrieved from the
+# same immutable release. The installer itself validates release tarballs
+# against sidecars mirrored byte-for-byte from upstream.
+download_mirror_installer() {
+  local dest="$1" manifest="$2" expected actual
+  curl -fLSs --retry 3 --connect-timeout 15 --max-time 120 \
+    "${XUI_MIRROR_BASE}/manifest.sha256" -o "$manifest" ||
+    die "无法下载自有镜像的 SHA256 清单。"
+  curl -fLSs --retry 3 --connect-timeout 15 --max-time 120 \
+    "${XUI_MIRROR_BASE}/install.sh" -o "$dest" ||
+    die "无法下载自有镜像的固定版本安装脚本。"
+  expected=$(awk '$2 == "install.sh" {print $1}' "$manifest")
+  [[ "$expected" =~ ^[a-f0-9]{64}$ ]] ||
+    die "自有镜像的安装脚本 SHA256 清单格式错误。"
+  actual=$(sha256sum "$dest" | awk '{print $1}')
+  [[ "$actual" == "$expected" ]] ||
+    die "自有镜像的安装脚本 SHA256 不匹配，拒绝执行。"
+  bash -n "$dest" || die "自有镜像安装脚本 Bash 语法检查失败。"
+}
+
 install_3xui() {
   PANEL_PORT=$(random_port) || die "无法找到可用的随机面板端口。"
   PANEL_USER="admin_$(openssl rand -hex 4)"
   PANEL_PASSWORD=$(openssl rand -base64 24 | tr -d '\n' | tr '/+' 'Aa' | cut -c1-28)
   PANEL_BASE="/$(openssl rand -hex 10)/"
 
-  log "安装 3x-ui 官方稳定版（无人值守模式）..."
-  XUI_NONINTERACTIVE=1   XUI_USERNAME="$PANEL_USER"   XUI_PASSWORD="$PANEL_PASSWORD"   XUI_PANEL_PORT="$PANEL_PORT"   XUI_WEB_BASE_PATH="$PANEL_BASE"   XUI_SSL_MODE=none   bash <(curl -fsSL https://raw.githubusercontent.com/MHSanaei/3x-ui/main/install.sh)
-
+  local arch source installer manifest work
+  arch=$(xui_arch)
+  source=$(choose_3xui_source "$arch")
+  log "安装 3x-ui ${XUI_PINNED_TAG}（来源：${source}；无人值守模式）..."
+  work=$(mktemp -d /tmp/3xui-onekey-upstream.XXXXXXXX)
+  chmod 0700 "$work"
+  installer="$work/install.sh"
+  manifest="$work/manifest.sha256"
+  if [[ "$source" == mirror ]]; then
+    download_mirror_installer "$installer" "$manifest"
+  else
+    if ! curl -fLSs --retry 3 --connect-timeout 15 --max-time 120 \
+      "https://raw.githubusercontent.com/MHSanaei/3x-ui/${XUI_PINNED_TAG}/install.sh" -o "$installer"; then
+      rm -rf -- "$work"
+      die "官方安装脚本下载失败；尚未启动上游安装，请改用 ONEKEY_3XUI_SOURCE=mirror 重试或使用失败清理。"
+    fi
+    bash -n "$installer" || { rm -rf -- "$work"; die "官方 3x-ui 安装脚本语法错误。"; }
+  fi
+  # Do not retry a second installer after a partial upstream failure: that
+  # could overwrite an incompletely initialized panel or its credentials.
+  if ! XUI_NONINTERACTIVE=1 \
+    XUI_USERNAME="$PANEL_USER" XUI_PASSWORD="$PANEL_PASSWORD" \
+    XUI_PANEL_PORT="$PANEL_PORT" XUI_WEB_BASE_PATH="$PANEL_BASE" \
+    XUI_SSL_MODE=none bash "$installer" "$XUI_PINNED_TAG"; then
+    rm -rf -- "$work"
+    die "3x-ui 安装未完成；不要重复安装。请先检查失败标记及日志。"
+  fi
+  rm -rf -- "$work"
   [[ -r /etc/x-ui/install-result.env ]] || die "3x-ui 安装结果文件缺失。"
   systemctl is-active --quiet x-ui || die "3x-ui 服务未正常启动。"
 }
