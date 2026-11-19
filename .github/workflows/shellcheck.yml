@@ -27,8 +27,11 @@ jobs:
           bash -n tests/caddy-resume-test.sh
           bash -n tests/site-permissions-test.sh
           bash -n tests/fresh-preflight-test.sh
+          bash -n tests/vendor-mirror-test.sh
+          bash -n scripts/build-3xui-mirror.sh
+          python3 -m py_compile scripts/patch-3xui-installer.py
       - name: ShellCheck
-        run: shellcheck install.sh status.sh update.sh uninstall.sh recovery.sh resume-caddy.sh tests/recovery-test.sh tests/panel-auth-test.sh tests/caddy-resume-test.sh tests/site-permissions-test.sh tests/fresh-preflight-test.sh
+        run: shellcheck install.sh status.sh update.sh uninstall.sh recovery.sh resume-caddy.sh tests/recovery-test.sh tests/panel-auth-test.sh tests/caddy-resume-test.sh tests/site-permissions-test.sh tests/fresh-preflight-test.sh tests/vendor-mirror-test.sh scripts/build-3xui-mirror.sh
       - name: Recovery safety tests
         run: bash tests/recovery-test.sh
       - name: 3x-ui CSRF login and inbound integration
@@ -39,3 +42,16 @@ jobs:
         run: bash tests/site-permissions-test.sh
       - name: Clean-VPS DNS preflight and install ordering
         run: bash tests/fresh-preflight-test.sh
+      - name: Pinned 3x-ui fallback and checksums
+        run: bash tests/vendor-mirror-test.sh
+      - name: Patch exact upstream v3.11.0 installer in CI
+        run: |
+          set -Eeuo pipefail
+          curl -fLSs --retry 3 --max-time 60 \
+            https://raw.githubusercontent.com/MHSanaei/3x-ui/v3.11.0/install.sh -o /tmp/upstream-xui-install.sh
+          python3 scripts/patch-3xui-installer.py /tmp/upstream-xui-install.sh /tmp/selfhosted-xui-install.sh
+          bash -n /tmp/selfhosted-xui-install.sh
+          if grep -E 'github.com/MHSanaei/3x-ui|raw.githubusercontent.com/MHSanaei/3x-ui' /tmp/selfhosted-xui-install.sh; then
+            echo "Installer still fetches the original upstream repo" >&2
+            exit 1
+          fi

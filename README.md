@@ -68,6 +68,22 @@ bash /root/onekey-install.sh --preflight
 
 预检通过**不等于**软件源、GitHub 下载、ACME 证书签发或后续 Reality 客户端连接一定成功；这些涉及外部网络和软件版本，仍需在安装后验收。
 
+## 上游 3x-ui 删除后也能从自有镜像安装
+
+自有镜像计划固定官方 `v3.11.0`，保存该版本的 **amd64/arm64 程序包、官方 SHA256、安装器、CLI/systemd 辅助文件、GPL-3.0 许可证与完整源码归档**，发布到本仓库 Release `mirror-3xui-v3.11.0`。
+
+新版 OneKey 默认使用 `ONEKEY_3XUI_SOURCE=auto`：在执行官方安装器前检查固定版资源；若官方资源不可访问，则尝试使用我们自己 GitHub 的镜像。如果镜像也无法访问，则明确报错，不会自动下载无校验资源。也可以通过 `ONEKEY_3XUI_SOURCE=mirror` 强制只用自有镜像：
+
+```bash
+curl -fLSs https://raw.githubusercontent.com/firewolf92/3x-ui-reality-onekey/main/install.sh -o /root/onekey-install.sh
+bash -n /root/onekey-install.sh
+ONEKEY_3XUI_SOURCE=mirror bash /root/onekey-install.sh
+```
+
+**使用前必须先确认对应 Release 已经发布，并在全新 VPS 进行完整验证**。这不是完全离线安装：APT/Caddy 软件源、ACME 证书和你自己 OneKey 仓库仍需可用；官方更新脚本仍依赖原上游。该镜像只是固定版本，不会自动合入安全更新。
+
+镜像保留 GPL 源码和原始版权义务；详细的文件清单、校验方式、故障边界见 [vendor/3x-ui/README.md](vendor/3x-ui/README.md)。独立 GitHub Fork 尚未创建，源码以本项目 Release 中的独立归档形式保留。
+
 ## 安装
 
 SSH 登录 VPS 后，以 root 执行：
